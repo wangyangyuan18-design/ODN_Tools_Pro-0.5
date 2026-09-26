@@ -1,0 +1,47 @@
+name: Build QGIS Plugin ZIP
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-plugin:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Validate QGIS plugin metadata
+        shell: bash
+        run: |
+          set -e
+          test -f metadata.txt
+          grep -q '^name=ODN Tools Pro$' metadata.txt
+          grep -q '^version=' metadata.txt
+          test -f __init__.py
+
+      - name: Build installable QGIS plugin ZIP
+        shell: bash
+        run: |
+          set -e
+          rm -rf build dist
+          mkdir -p build/ODN_Tools_Pro dist
+
+          rsync -a . build/ODN_Tools_Pro/             --exclude '.git/'             --exclude '.github/'             --exclude 'build/'             --exclude 'dist/'             --exclude '*.zip'
+
+          cd build
+          zip -r ../dist/ODN_Tools_Pro.zip ODN_Tools_Pro
+
+      - name: Upload QGIS plugin ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: ODN_Tools_Pro-QGIS-Plugin
+          path: dist/ODN_Tools_Pro.zip
+          if-no-files-found: error
+          retention-days: 30
