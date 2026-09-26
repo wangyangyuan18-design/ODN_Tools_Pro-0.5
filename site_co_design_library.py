@@ -1906,696 +1906,289 @@ def cable_split_run(params: dict, iface=None):
     show_log_dialog('Site Co-Design', '\n'.join(log_lines))
 
 
-def validation_point_not_on_line(line_layer: QgsVectorLayer, point_layer: QgsVectorLayer, tolerance: float = None):
-    """
-    Check each point in point_layer and return list of point features whose
-    distance to the nearest line in line_layer is greater than tolerance.
+def _layer_display_name(layer):
+    try:
+        return str(layer.name())
+    except Exception:
+        return '<unknown>'
 
-    Returns a list of QgsFeature objects from point_layer.
-    Adds detailed debug logging in-memory (returned via validation_run).
-    """
-    proj = QgsProject.instance()
-    tc = None
-    try:
-        tc = proj.transformContext()
-    except Exception:
-        tc = None
 
-    debug = []
-    debug.append('=========================')
-    debug.append('Validation Debug Start')
-    debug.append('=========================')
+def _feature_display_name(feature):
+    try:
+        fields = {field.name() for field in feature.fields()}
+        if 'Name' in fields:
+            value = feature.attribute('Name')
+            if value is not None and str(value).strip():
+                return str(value)
+        for field in feature.fields():
+            if field.typeName() == 'String':
+                value = feature.attribute(field.name())
+                if value is not None and str(value).strip():
+                    return str(value)
+    except Exception:
+        pass
+    try:
+        return str(feature.id())
+    except Exception:
+        return '<unknown>'
 
-    # Layer info
-    try:
-        debug.append(f'Line Layer: {line_layer.name()}')
-    except Exception:
-        debug.append('Line Layer: <unknown>')
-    try:
-        debug.append(f'Point Layer: {point_layer.name()}')
-    except Exception:
-        debug.append('Point Layer: <unknown>')
-    try:
-        debug.append(f'Line Feature Count: {line_layer.featureCount()}')
-    except Exception:
-        debug.append('Line Feature Count: <error>')
-    try:
-        debug.append(f'Point Feature Count: {point_layer.featureCount()}')
-    except Exception:
-        debug.append('Point Feature Count: <error>')
-    try:
-        debug.append(f'Line CRS: {line_layer.crs().authid()}')
-    except Exception:
-        debug.append('Line CRS: <unknown>')
-    try:
-        debug.append(f'Point CRS: {point_layer.crs().authid()}')
-    except Exception:
-        debug.append('Point CRS: <unknown>')
 
-    if tolerance is None:
+def _geometry_exact_signature(geometry):
+    """Return a canonical geometry signature for the fast duplicate path."""
+    if geometry is None or geometry.isEmpty():
+        return None
+    try:
+        normalized = QgsGeometry(geometry)
+        normalized.normalize()
+        return (
+            int(QgsWkbTypes.geometryType(normalized.wkbType())),
+            normalized.asWkb().hex(),
+        )
+    except Exception:
+        return None
+
+
+def _geometry_coarse_key(geometry):
+    """Return a cheap bucket key for geometrically equal candidates."""
+    if geometry is None or geometry.isEmpty():
+        return None
+    try:
+        bbox = geometry.boundingBox()
+        geom_type = int(QgsWkbTypes.geometryType(geometry.wkbType()))
+        base = (
+            geom_type,
+            bbox.xMinimum(),
+            bbox.yMinimum(),
+            bbox.xMaximum(),
+            bbox.yMaximum(),
+        )
+        if geom_type == int(QgsWkbTypes.LineGeometry):
+            return base + ('length', float(geometry.length()))
+        if geom_type == int(QgsWkbTypes.PolygonGeometry):
+            return base + ('area', float(geometry.area()))
+        return base
+    except Exception:
+        return None
+
+
+def _geometry_equal(left, right):
+    """Use GEOS topological equality so direction/vertex-order differences are handled."""
+    try:
+        return bool(left.isGeosEqual(right))
+    except Exception:
         try:
-            tolerance = _cns_connection_tolerance(line_layer.crs())
+            return bool(left.equals(right))
         except Exception:
-            tolerance = 0.5
-    debug.append(f'Current tolerance = {tolerance}')
+            return False
 
-    # inspect first 10 points
-    debug.append('')
-    debug.append('--- Sample of first up to 10 points ---')
+
+def _find_duplicate_features(layer):
+    """
+    Find duplicate features inside one vector layer.
+
+    The first feature by FID is retained. Duplicates are identified only within
+    the same layer and only when their geometries are spatially equal.
+    """
+    exact_seen = {}
+    coarse_buckets = {}
+    duplicate_ids = []
+    duplicate_groups = set()
+
     try:
-        cnt = 0
-        for pf in point_layer.getFeatures():
-            if cnt >= 10:
+        features = sorted(layer.getFeatures(), key=lambda feature: feature.id())
+    except Exception:
+        features = list(layer.getFeatures())
+
+    for feature in features:
+        geometry = feature.geometry()
+        if geometry is None or geometry.isEmpty():
+            continue
+
+        feature_id = feature.id()
+
+        # Fast path: canonical normalized WKB.
+        exact_signature = _geometry_exact_signature(geometry)
+        if exact_signature is not None:
+            representative_id = exact_seen.get(exact_signature)
+            if representative_id is not None:
+                duplicate_ids.append(feature_id)
+                duplicate_groups.add(representative_id)
+                continue
+            exact_seen[exact_signature] = feature_id
+
+        # Safe fallback: only compare candidates that can be geometrically equal.
+        coarse_key = _geometry_coarse_key(geometry)
+        candidates = coarse_buckets.setdefault(coarse_key, [])
+        duplicate_of = None
+        for representative_id, representative_geometry in candidates:
+            if _geometry_equal(geometry, representative_geometry):
+                duplicate_of = representative_id
                 break
-            try:
-                pid = pf.id()
-            except Exception:
-                pid = '<no id>'
-            # name extraction
-            name = ''
-            try:
-                fields = [f.name() for f in pf.fields()]
-                if 'Name' in fields:
-                    val = pf.attribute('Name')
-                    if val is not None:
-                        name = str(val)
-                else:
-                    for f in pf.fields():
-                        if f.typeName() == 'String':
-                            v = pf.attribute(f.name())
-                            if v is not None and str(v).strip() != '':
-                                name = str(v)
-                                break
-            except Exception:
-                name = ''
-            # geometry info
-            try:
-                geom = pf.geometry()
-                geom_type = geom.type() if geom is not None else '<no geom>'
-                try:
-                    wkt = geom.asWkt()[:200]
-                except Exception:
-                    wkt = '<wkt failed>'
-            except Exception:
-                geom_type = '<error>'
-                wkt = '<error>'
-            debug.append(f'Point ID: {pid}')
-            debug.append(f'Name: {name}')
-            debug.append(f'Geometry Type: {geom_type}')
-            debug.append(f'WKT: {wkt}')
-            debug.append('')
-            cnt += 1
-    except Exception:
-        debug.append('Failed to enumerate point features for sample')
 
-    abnormal = []
-    # Load line geometries into memory for simple nearest-distance checks
-    # Keep (feature id, geometry) pairs so we can log nearest line id
-    line_geoms = []
-    for lf in line_layer.getFeatures():
-        try:
-            lg = lf.geometry()
-            if lg is None or lg.isEmpty():
-                continue
-            try:
-                lid = lf.id()
-            except Exception:
-                lid = None
-            line_geoms.append((lid, lg))
-        except Exception:
-            continue
-
-    # Line geometry debug summary
-    try:
-        debug.append('')
-        debug.append('--- Line Geometry Debug ---')
-        debug.append(f'Loaded Line Count: {len(line_geoms)}')
-        for lid, lg in line_geoms[:5]:
-            try:
-                debug.append(
-                    f'Line ID:{lid}, '
-                    f'WKB:{lg.wkbType()}, '
-                    f'Length:{lg.length()}, '
-                    f'Multipart:{lg.isMultipart()}'
-                )
-                try:
-                    debug.append(f'WKT:{lg.asWkt()[:300]}')
-                except Exception:
-                    debug.append('WKT: <failed to fetch>')
-            except Exception as e:
-                debug.append(f'Line Debug Error:{e}')
-    except Exception:
-        # keep going if debug fails
-        pass
-
-    # For each point compute nearest line and distance
-    sample_count = 0
-    for pf in point_layer.getFeatures():
-        pg = pf.geometry()
-        if pg is None or pg.isEmpty():
-            continue
-        # transform point geometry to line CRS if needed
-        try:
-            if point_layer.crs() != line_layer.crs() and tc is not None:
-                pg_t = QgsGeometry(pg)
-                try:
-                    pg_t.transform(QgsCoordinateTransform(point_layer.crs(), line_layer.crs(), tc))
-                except Exception:
-                    pg_t = QgsGeometry(pg)
-            else:
-                pg_t = QgsGeometry(pg)
-        except Exception:
-            pg_t = QgsGeometry(pg)
-
-        pt_xy = _cns_point_xy(pg_t)
-        if pt_xy is None:
-            continue
-        qg_pt = QgsGeometry.fromPointXY(pt_xy)
-        min_dist = float('inf')
-        nearest_id = None
-        for lid, lg in line_geoms:
-            try:
-                d = lg.distance(qg_pt)
-                if d is None:
-                    continue
-                if d < min_dist:
-                    min_dist = d
-                    nearest_id = lid
-            except Exception:
-                continue
-
-        # point display name
-        p_name = ''
-        try:
-            fields = [f.name() for f in pf.fields()]
-            if 'Name' in fields:
-                val = pf.attribute('Name')
-                if val is not None and str(val).strip() != '':
-                    p_name = str(val)
-            else:
-                for f in pf.fields():
-                    if f.typeName() == 'String':
-                        v = pf.attribute(f.name())
-                        if v is not None and str(v).strip() != '':
-                            p_name = str(v)
-                            break
-        except Exception:
-            p_name = ''
-
-        # limited per-point debug for first 10 points
-        if sample_count < 10:
-            try:
-                debug.append('')
-                debug.append(f'Point Name: {p_name}')
-                debug.append(f'Point ID: {pf.id()}')
-                debug.append(f'Nearest Cable ID: {nearest_id}')
-                debug.append(f'Distance to Cable: {min_dist}')
-                debug.append(f'Current Tolerance: {tolerance}')
-            except Exception:
-                debug.append('Failed to append per-point debug info')
-
-        is_abnormal = False
-        if min_dist is None:
-            # treat as skip
-            pass
+        if duplicate_of is not None:
+            duplicate_ids.append(feature_id)
+            duplicate_groups.add(duplicate_of)
         else:
-            if min_dist > tolerance:
-                abnormal.append(pf)
-                is_abnormal = True
+            candidates.append((feature_id, QgsGeometry(geometry)))
 
-        if sample_count < 10:
+    return duplicate_ids, len(duplicate_groups)
+
+
+def _delete_duplicate_features(layer, feature_ids):
+    """
+    Delete duplicate FIDs through the normal QGIS editing workflow.
+
+    If the layer was already being edited, changes stay in that edit session and
+    are not committed by this function. Otherwise the function commits its own
+    edit transaction after successful deletion.
+    """
+    if not feature_ids:
+        return True, '无重复，无需删除'
+
+    was_editing = False
+    try:
+        was_editing = bool(layer.isEditable())
+    except Exception:
+        pass
+
+    if not was_editing:
+        try:
+            if not layer.startEditing():
+                return False, '无法进入编辑状态'
+        except Exception as exc:
+            return False, f'进入编辑状态失败：{exc}'
+
+    try:
+        deleted = bool(layer.deleteFeatures(feature_ids))
+    except Exception as exc:
+        deleted = False
+        delete_error = str(exc)
+
+    if not deleted:
+        if not was_editing:
             try:
-                if is_abnormal:
-                    debug.append('ABNORMAL')
-                else:
-                    debug.append('OK')
+                layer.rollBack()
             except Exception:
                 pass
-            sample_count += 1
+        return False, locals().get('delete_error', '删除重复要素失败')
 
-    # show debug dialog from within this function so logs are visible even if no abnormal found
-    try:
-        show_log_dialog('Validation Debug - Point not on line', '\n'.join(debug))
-    except Exception:
-        pass
+    if was_editing:
+        return True, '已删除，保持原有编辑状态，未自动提交'
 
-    return abnormal
-
-
-def validation_point_not_on_vertex(line_layer: QgsVectorLayer, point_layer: QgsVectorLayer, tolerance: float = None):
-    """
-    For each point in point_layer, find the nearest line in line_layer and
-    check whether the point coincides with any vertex of that nearest line
-    (within tolerance). If not, the point is considered abnormal.
-
-    Returns a list of QgsFeature objects from point_layer.
-    Adds detailed debug logging in-memory.
-    """
-    proj = QgsProject.instance()
-    tc = None
     try:
-        tc = proj.transformContext()
-    except Exception:
-        tc = None
-
-    debug = []
-    debug.append('=========================')
-    debug.append('Validation Debug Start')
-    debug.append('=========================')
-
-    # Layer info
-    try:
-        debug.append(f'Line Layer: {line_layer.name()}')
-    except Exception:
-        debug.append('Line Layer: <unknown>')
-    try:
-        debug.append(f'Point Layer: {point_layer.name()}')
-    except Exception:
-        debug.append('Point Layer: <unknown>')
-    try:
-        debug.append(f'Line Feature Count: {line_layer.featureCount()}')
-    except Exception:
-        debug.append('Line Feature Count: <error>')
-    try:
-        debug.append(f'Point Feature Count: {point_layer.featureCount()}')
-    except Exception:
-        debug.append('Point Feature Count: <error>')
-    try:
-        debug.append(f'Line CRS: {line_layer.crs().authid()}')
-    except Exception:
-        debug.append('Line CRS: <unknown>')
-    try:
-        debug.append(f'Point CRS: {point_layer.crs().authid()}')
-    except Exception:
-        debug.append('Point CRS: <unknown>')
-
-    if tolerance is None:
+        if layer.commitChanges():
+            return True, '已删除并保存'
+        errors = []
         try:
-            tolerance = _cns_connection_tolerance(line_layer.crs())
-        except Exception:
-            tolerance = 0.5
-    debug.append(f'Current tolerance = {tolerance}')
-
-    # inspect first 10 points
-    debug.append('')
-    debug.append('--- Sample of first up to 10 points ---')
-    try:
-        cnt = 0
-        for pf in point_layer.getFeatures():
-            if cnt >= 10:
-                break
-            try:
-                pid = pf.id()
-            except Exception:
-                pid = '<no id>'
-            # name extraction
-            name = ''
-            try:
-                fields = [f.name() for f in pf.fields()]
-                if 'Name' in fields:
-                    val = pf.attribute('Name')
-                    if val is not None:
-                        name = str(val)
-                else:
-                    for f in pf.fields():
-                        if f.typeName() == 'String':
-                            v = pf.attribute(f.name())
-                            if v is not None and str(v).strip() != '':
-                                name = str(v)
-                                break
-            except Exception:
-                name = ''
-            # geometry info
-            try:
-                geom = pf.geometry()
-                geom_type = geom.type() if geom is not None else '<no geom>'
-                try:
-                    wkt = geom.asWkt()[:200]
-                except Exception:
-                    wkt = '<wkt failed>'
-            except Exception:
-                geom_type = '<error>'
-                wkt = '<error>'
-            debug.append(f'Point ID: {pid}')
-            debug.append(f'Name: {name}')
-            debug.append(f'Geometry Type: {geom_type}')
-            debug.append(f'WKT: {wkt}')
-            debug.append('')
-            cnt += 1
-    except Exception:
-        debug.append('Failed to enumerate point features for sample')
-
-    if tolerance is None:
-        try:
-            tolerance = _cns_connection_tolerance(line_layer.crs())
-        except Exception:
-            tolerance = 0.5
-
-    # Preload line geometries and their vertex lists
-    # store (feature id, geometry, verts)
-    lines = []  # list of tuples (line_id, lg_geom, [QgsPointXY,...])
-    for lf in line_layer.getFeatures():
-        try:
-            lg = lf.geometry()
-            if lg is None or lg.isEmpty():
-                continue
-            verts = []
-            try:
-                if lg.isMultipart():
-                    parts = lg.asMultiPolyline()
-                    for part in parts:
-                        for p in part:
-                            verts.append(QgsPointXY(p))
-                else:
-                    for p in lg.asPolyline():
-                        verts.append(QgsPointXY(p))
-            except Exception:
-                # fallback: attempt to sample vertices by converting to WKT
-                try:
-                    pts = lg.asPolyline()
-                    for p in pts:
-                        verts.append(QgsPointXY(p))
-                except Exception:
-                    pass
-            try:
-                lid = lf.id()
-            except Exception:
-                lid = None
-            lines.append((lid, lg, verts))
-        except Exception:
-            continue
-
-    abnormal = []
-    sample_count = 0
-    for pf in point_layer.getFeatures():
-        pg = pf.geometry()
-        if pg is None or pg.isEmpty():
-            continue
-        try:
-            if point_layer.crs() != line_layer.crs() and tc is not None:
-                pg_t = QgsGeometry(pg)
-                try:
-                    pg_t.transform(QgsCoordinateTransform(point_layer.crs(), line_layer.crs(), tc))
-                except Exception:
-                    pg_t = QgsGeometry(pg)
-            else:
-                pg_t = QgsGeometry(pg)
-        except Exception:
-            pg_t = QgsGeometry(pg)
-
-        pt_xy = _cns_point_xy(pg_t)
-        if pt_xy is None:
-            continue
-
-        # find nearest line (by distance to geometry)
-        nearest_line_id = None
-        nearest_verts = None
-        min_dist = float('inf')
-        qg_pt = QgsGeometry.fromPointXY(pt_xy)
-        for lid, lg, verts in lines:
-            try:
-                d = lg.distance(qg_pt)
-                if d is None:
-                    continue
-                if d < min_dist:
-                    min_dist = d
-                    nearest_line_id = lid
-                    nearest_verts = verts
-            except Exception:
-                continue
-
-        # point name
-        pname = ''
-        try:
-            fields = [f.name() for f in pf.fields()]
-            if 'Name' in fields:
-                val = pf.attribute('Name')
-                if val is not None and str(val).strip() != '':
-                    pname = str(val)
-            else:
-                for f in pf.fields():
-                    if f.typeName() == 'String':
-                        v = pf.attribute(f.name())
-                        if v is not None and str(v).strip() != '':
-                            pname = str(v)
-                            break
-        except Exception:
-            pname = ''
-
-        # limited per-point debug for first 10 points
-        if sample_count < 10:
-            try:
-                debug.append('')
-                debug.append(f'Point Name: {pname}')
-                debug.append(f'Point ID: {pf.id()}')
-                debug.append(f'Nearest Cable ID: {nearest_line_id}')
-                debug.append(f'Distance to Cable: {min_dist}')
-                debug.append(f'Current Tolerance: {tolerance}')
-                if nearest_verts is not None:
-                    debug.append(f'Vertex Count: {len(nearest_verts)}')
-                    # compute nearest vertex distance
-                    vmin = float('inf')
-                    for v in nearest_verts:
-                        try:
-                            d2 = _cns_distance(v, pt_xy)
-                            if d2 is None:
-                                continue
-                            if d2 < vmin:
-                                vmin = d2
-                        except Exception:
-                            continue
-                    if vmin == float('inf'):
-                        debug.append('Nearest Vertex Distance: <unknown>')
-                    else:
-                        debug.append(f'Nearest Vertex Distance: {vmin}')
-                else:
-                    debug.append('Vertex Count: 0')
-            except Exception:
-                debug.append('Failed to append per-point debug info')
-
-        is_abnormal = False
-        if nearest_verts is None:
-            abnormal.append(pf)
-            is_abnormal = True
-        else:
-            # check if any vertex coincides with point within tolerance
-            matched = False
-            vmin = float('inf')
-            for v in nearest_verts:
-                try:
-                    d_v = _cns_distance(v, pt_xy)
-                    if d_v is None:
-                        continue
-                    if d_v < vmin:
-                        vmin = d_v
-                    if d_v <= tolerance:
-                        matched = True
-                        break
-                except Exception:
-                    continue
-            if not matched:
-                abnormal.append(pf)
-                is_abnormal = True
-
-        if sample_count < 10:
-            try:
-                if is_abnormal:
-                    debug.append('ABNORMAL')
-                else:
-                    debug.append('OK')
-            except Exception:
-                pass
-            sample_count += 1
-
-    # show debug dialog from within this function so logs are visible even if no abnormal found
-    try:
-        show_log_dialog('Validation Debug - Point not on cable vertex', '\n'.join(debug))
-    except Exception:
-        pass
-
-    # attach debug to abnormal features for retrieval
-    try:
-        for f in abnormal:
-            try:
-                setattr(f, '_validation_debug', '\n'.join(debug))
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-    return abnormal
-
-
-def validation_run(params: dict, iface=None):
-    """
-    Unified validation entry point. Reads params, dispatches to specific
-    validation_* functions, and handles UI output / selection.
-
-    Expected params keys (from dialog):
-      - line_layer_name: str
-      - point_layer_name: str
-      - validation_item: str (display text of validation)
-      - tolerance: optional float
-      - list_names: optional bool
-      - select_results: optional bool
-    """
-    proj = QgsProject.instance()
-    line_name = params.get('line_layer_name')
-    point_name = params.get('point_layer_name')
-    item = params.get('validation_item')
-    tol = params.get('tolerance')
-    try:
-        tol = float(tol) if tol is not None and str(tol).strip() != '' else None
-    except Exception:
-        tol = None
-
-    if not line_name:
-        QtWidgets.QMessageBox.critical(None, 'Site Co-Design', '未指定线图层名称')
-        return
-    if not point_name:
-        QtWidgets.QMessageBox.critical(None, 'Site Co-Design', '未指定点图层名称')
-        return
-
-    line_layers = proj.mapLayersByName(line_name)
-    if not line_layers:
-        QtWidgets.QMessageBox.critical(None, 'Site Co-Design', f'未找到线图层: {line_name}')
-        return
-    point_layers = proj.mapLayersByName(point_name)
-    if not point_layers:
-        QtWidgets.QMessageBox.critical(None, 'Site Co-Design', f'未找到点图层: {point_name}')
-        return
-
-    line_layer = line_layers[0]
-    point_layer = point_layers[0]
-
-    # dispatch
-    func = None
-    if item == 'Point not on line':
-        func = validation_point_not_on_line
-    elif item == 'Point not on cable vertex':
-        func = validation_point_not_on_vertex
-    else:
-        QtWidgets.QMessageBox.critical(None, 'Site Co-Design', f'未知的校验项: {item}')
-        return
-
-    try:
-        abnormal_feats = func(line_layer, point_layer, tolerance=tol)
-    except Exception as e:
-        QtWidgets.QMessageBox.critical(None, 'Site Co-Design', f'Validation 运行出错: {str(e)}')
-        return
-
-    # collect debug text if attached to features
-    debug_lines = []
-    debug_lines.append('=========================')
-    debug_lines.append('Validation Debug Start')
-    debug_lines.append('=========================')
-    try:
-        debug_lines.append(f'Line Layer: {line_layer.name()}')
-    except Exception:
-        debug_lines.append('Line Layer: <unknown>')
-    try:
-        debug_lines.append(f'Point Layer: {point_layer.name()}')
-    except Exception:
-        debug_lines.append('Point Layer: <unknown>')
-    try:
-        debug_lines.append(f'Line Feature Count: {line_layer.featureCount()}')
-    except Exception:
-        debug_lines.append('Line Feature Count: <error>')
-    try:
-        debug_lines.append(f'Point Feature Count: {point_layer.featureCount()}')
-    except Exception:
-        debug_lines.append('Point Feature Count: <error>')
-    try:
-        debug_lines.append(f'Line CRS: {line_layer.crs().authid()}')
-    except Exception:
-        debug_lines.append('Line CRS: <unknown>')
-    try:
-        debug_lines.append(f'Point CRS: {point_layer.crs().authid()}')
-    except Exception:
-        debug_lines.append('Point CRS: <unknown>')
-    debug_lines.append('')
-
-    # append any debug attached to abnormal features
-    try:
-        if abnormal_feats:
-            # get debug from first abnormal (they all carry same debug text)
-            f0 = abnormal_feats[0]
-            try:
-                txt = getattr(f0, '_validation_debug', None)
-                if txt:
-                    debug_lines.append(txt)
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-    # Additionally, run both checks to report counts for both items (debug only)
-    try:
-        line_abnorm = validation_point_not_on_line(line_layer, point_layer, tolerance=tol)
-        vertex_abnorm = validation_point_not_on_vertex(line_layer, point_layer, tolerance=tol)
-        debug_lines.append('')
-        debug_lines.append(f'Point not on line abnormal count: {len(line_abnorm)}')
-        debug_lines.append(f'Point not on vertex abnormal count: {len(vertex_abnorm)}')
-    except Exception:
-        pass
-
-    # format output
-    lines = []
-    lines.append('Validation Result')
-    lines.append(item)
-    lines.append('')
-    lines.append(f'Abnormal Count : {len(abnormal_feats)}')
-    lines.append('')
-
-    # helper to extract display name
-    def _feat_display_name(feat):
-        try:
-            fields = [f.name() for f in feat.fields()]
-            if 'Name' in fields:
-                val = feat.attribute('Name')
-                if val is not None and str(val).strip() != '':
-                    return str(val)
-            for f in feat.fields():
-                if f.typeName() == 'String':
-                    v = feat.attribute(f.name())
-                    if v is not None and str(v).strip() != '':
-                        return str(v)
+            errors = list(layer.commitErrors())
         except Exception:
             pass
-        return str(feat.id())
-
-    for f in abnormal_feats:
         try:
-            lines.append(_feat_display_name(f))
+            layer.rollBack()
         except Exception:
-            try:
-                lines.append(str(f.id()))
-            except Exception:
-                lines.append('<unknown>')
+            pass
+        return False, '保存失败：' + ('；'.join(str(e) for e in errors) if errors else '未知错误')
+    except Exception as exc:
+        try:
+            layer.rollBack()
+        except Exception:
+            pass
+        return False, f'保存失败：{exc}'
 
-    # show log
-    # combine debug_lines + main lines
-    try:
-        all_text = '\n'.join(debug_lines) + '\n\n' + '\n'.join(lines)
-    except Exception:
-        all_text = '\n'.join(lines)
-    show_log_dialog('Site Co-Design - Validation', all_text)
 
-    # selection if requested
+def validation_layer_uniqueness_run(iface=None):
+    """
+    Check every point/line/polygon vector layer in the current QGIS project.
+
+    Within each layer, geometrically identical features are treated as duplicates.
+    Only the first feature (lowest FID) is retained and the remaining duplicates
+    are deleted. Partial geometry overlap is never treated as a duplicate.
+    """
+    project = QgsProject.instance()
+    layer_results = []
+    total_layers = 0
+    duplicate_layers = 0
+    total_deleted = 0
+
+    for layer in project.mapLayers().values():
+        try:
+            if layer.type() != QgsMapLayer.VectorLayer:
+                continue
+            geometry_type = QgsWkbTypes.geometryType(layer.wkbType())
+            if geometry_type not in (
+                QgsWkbTypes.PointGeometry,
+                QgsWkbTypes.LineGeometry,
+                QgsWkbTypes.PolygonGeometry,
+            ):
+                continue
+        except Exception:
+            continue
+
+        total_layers += 1
+        layer_name = _layer_display_name(layer)
+
+        try:
+            before_count = int(layer.featureCount())
+        except Exception:
+            before_count = 0
+
+        try:
+            duplicate_ids, duplicate_group_count = _find_duplicate_features(layer)
+        except Exception as exc:
+            layer_results.append(
+                f'{layer_name} | {before_count} | 检查失败：{exc}'
+            )
+            continue
+
+        if not duplicate_ids:
+            layer_results.append(
+                f'{layer_name} | {before_count} → {before_count} | 无重复'
+            )
+            continue
+
+        duplicate_layers += 1
+        deleted_ok, delete_message = _delete_duplicate_features(layer, duplicate_ids)
+        if deleted_ok:
+            deleted_count = len(duplicate_ids)
+            total_deleted += deleted_count
+            try:
+                after_count = int(layer.featureCount())
+            except Exception:
+                after_count = before_count - deleted_count
+
+            layer_results.append(
+                f'{layer_name} | {before_count} → {after_count} | '
+                f'重复组：{duplicate_group_count} | 删除：{deleted_count} | {delete_message}'
+            )
+        else:
+            layer_results.append(
+                f'{layer_name} | {before_count} | '
+                f'重复组：{duplicate_group_count} | 删除失败：{len(duplicate_ids)} | {delete_message}'
+            )
+
+    lines = [
+        '图层唯一性校验完成',
+        '',
+        f'检查图层：{total_layers}',
+        f'发现重复图层：{duplicate_layers}',
+        f'删除重复要素：{total_deleted}',
+        '',
+    ]
+    lines.extend(layer_results)
+
     try:
-        if params.get('select_results'):
-            # clear existing selection then select abnormal ids
-            try:
-                point_layer.removeSelection()
-            except Exception:
-                pass
-            ids = [f.id() for f in abnormal_feats]
-            try:
-                point_layer.selectByIds(ids)
-            except Exception:
-                try:
-                    point_layer.selectByIds(list(map(int, ids)))
-                except Exception:
-                    pass
+        show_log_dialog('ODN Tools Pro - 图层唯一性校验', '\\n'.join(lines))
     except Exception:
         pass
+
+    return {
+        'layer_count': total_layers,
+        'duplicate_layer_count': duplicate_layers,
+        'deleted_feature_count': total_deleted,
+        'results': layer_results,
+    }
+
+
+def validation_run(params=None, iface=None):
+    """Compatibility wrapper for the validation module entry point."""
+    return validation_layer_uniqueness_run(iface=iface)
