@@ -2130,53 +2130,36 @@ def validation_layer_uniqueness_run(iface=None):
         layer_name = _layer_display_name(layer)
 
         try:
-            before_count = int(layer.featureCount())
-        except Exception:
-            before_count = 0
-
-        try:
             duplicate_ids, duplicate_group_count = _find_duplicate_features(layer)
         except Exception as exc:
             layer_results.append(
-                f'{layer_name} | {before_count} | 检查失败：{exc}'
+                f'{layer_name} | 检查失败：{exc}'
             )
             continue
 
         if not duplicate_ids:
-            layer_results.append(
-                f'{layer_name} | {before_count} → {before_count} | 无重复'
-            )
             continue
 
         duplicate_layers += 1
         deleted_ok, delete_message = _delete_duplicate_features(layer, duplicate_ids)
+
         if deleted_ok:
             deleted_count = len(duplicate_ids)
             total_deleted += deleted_count
-            try:
-                after_count = int(layer.featureCount())
-            except Exception:
-                after_count = before_count - deleted_count
-
             layer_results.append(
-                f'{layer_name} | {before_count} → {after_count} | '
-                f'重复组：{duplicate_group_count} | 删除：{deleted_count} | {delete_message}'
+                f'{layer_name} | 删除重复要素 | {deleted_count}'
             )
         else:
             layer_results.append(
-                f'{layer_name} | {before_count} | '
-                f'重复组：{duplicate_group_count} | 删除失败：{len(duplicate_ids)} | {delete_message}'
+                f'{layer_name} | 删除失败 | {len(duplicate_ids)} | {delete_message}'
             )
 
-    lines = [
-        '图层唯一性校验完成',
-        '',
-        f'检查图层：{total_layers}',
-        f'发现重复图层：{duplicate_layers}',
-        f'删除重复要素：{total_deleted}',
-        '',
-    ]
-    lines.extend(layer_results)
+    lines = ['图层唯一性校验完成']
+
+    if duplicate_layers == 0:
+        lines.append('所有图层 | 无重复')
+    else:
+        lines.extend(layer_results)
 
     try:
         show_log_dialog('ODN Tools Pro - 图层唯一性校验', '\\n'.join(lines))
@@ -2189,7 +2172,6 @@ def validation_layer_uniqueness_run(iface=None):
         'deleted_feature_count': total_deleted,
         'results': layer_results,
     }
-
 
 def validation_run(params=None, iface=None):
     """Compatibility wrapper for the validation module entry point."""
