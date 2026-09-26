@@ -1195,7 +1195,7 @@ def _cns_walk_branch(fdt_node_id, first_edge, nodes, adjacency, log):
     return branch_fats, path, visited_edges
 
 
-def _cns_generate_cable_assignments(fdt_nodes, nodes, adjacency, log, dir_enum='clockwise'):
+def _cns_generate_cable_assignments(fdt_nodes, nodes, adjacency, log, dir_enum='clockwise', separator=' - '):
     cable_assignments = {}
     visited_edges = set()
     for fdt_node in fdt_nodes.values():
@@ -1216,7 +1216,7 @@ def _cns_generate_cable_assignments(fdt_nodes, nodes, adjacency, log, dir_enum='
                 child = branch_path[i + 1]
                 parent_name = nodes.get(parent, {}).get('name', str(parent))
                 child_name = nodes.get(child, {}).get('name', str(child))
-                cable_name = f"{parent_name}-{child_name}"
+                cable_name = f"{parent_name}{separator}{child_name}"
                 connection_edge = None
                 for e in adjacency.get(parent, []):
                     if _cns_get_other_node(e, parent) == child:
@@ -1329,7 +1329,11 @@ def connection_point_naming_run(params: dict, iface=None):
     nodes, adjacency = _cns_build_graph(fdt_nodes, fat_nodes, line_feats, connection_tol, fat_owner, log)
     _cns_validate_graph(nodes, adjacency, log)
 
-    cable_assignments = _cns_generate_cable_assignments(fdt_nodes, nodes, adjacency, log, dir_enum=dir_enum)
+    cable_assignments = _cns_generate_cable_assignments(
+        fdt_nodes, nodes, adjacency, log,
+        dir_enum=dir_enum,
+        separator=params.get('line_name_separator', ' - ')
+    )
     log.append(f"Generated Cable Assignments: {len(cable_assignments)}")
 
     assignments = {}
