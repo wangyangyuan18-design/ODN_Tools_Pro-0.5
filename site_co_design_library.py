@@ -2014,7 +2014,6 @@ def _find_duplicate_features(layer):
                 duplicate_ids.append(feature_id)
                 duplicate_groups.add(representative_id)
                 continue
-            exact_seen[exact_signature] = feature_id
 
         # Safe fallback: only compare candidates that can be geometrically equal.
         coarse_key = _geometry_coarse_key(geometry)
@@ -2028,8 +2027,11 @@ def _find_duplicate_features(layer):
         if duplicate_of is not None:
             duplicate_ids.append(feature_id)
             duplicate_groups.add(duplicate_of)
-        else:
-            candidates.append((feature_id, QgsGeometry(geometry)))
+            continue
+
+        if exact_signature is not None:
+            exact_seen[exact_signature] = feature_id
+        candidates.append((feature_id, QgsGeometry(geometry)))
 
     return duplicate_ids, len(duplicate_groups)
 
