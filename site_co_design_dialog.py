@@ -910,22 +910,7 @@ class ConnectionPointDialog(QtWidgets.QDialog):
 
 
 class CableValidationDialog(QtWidgets.QDialog):
-    """
-    New unified Validation dialog (compact layout).
-
-    Layout (left aligned):
-      Line Layer:   [ combo ]
-      Point Layer:  [ combo ]
-      Validation:   [ combo ]
-      [ Run ]
-
-    Below Run there are two checkboxes:
-      - List abnormal point names
-      - Select abnormal points
-
-    The dialog gathers UI parameters and calls validation_run(params, iface=self.iface).
-    """
-    VALIDATION_ITEMS = ['Point not on line', 'Point not on cable vertex']
+    """Layer uniqueness validation and duplicate-feature cleanup dialog."""
 
     def __init__(self, iface=None, parent=None):
         self.iface = iface
@@ -936,145 +921,60 @@ class CableValidationDialog(QtWidgets.QDialog):
             except Exception:
                 parent_widget = None
         super().__init__(parent_widget)
-        # title changed to generic Validation (校验)
-        self.setWindowTitle('校验')
+        self.setWindowTitle('图层唯一性校验')
         self._build_ui()
-        self._connect_signals()
-        self._populate_layers()
-        self._load_saved()
 
     def _build_ui(self):
-        grid = QtWidgets.QGridLayout()
-        grid.setHorizontalSpacing(8)
-        grid.setVerticalSpacing(6)
-        ctrl_w = 300
+        info = QtWidgets.QLabel(
+            '自动检查当前项目全部点、线、面图层。\\n'
+            '同一图层内完全重合的重复要素只保留一个，删除其余重复要素。'
+        )
+        info.setWordWrap(True)
 
-        # Line Layer
-        grid.addWidget(QtWidgets.QLabel('Line Layer：'), 0, 0)
-        self.lineLayerCombo = QtWidgets.QComboBox()
-        self.lineLayerCombo.setMinimumWidth(ctrl_w)
-        grid.addWidget(self.lineLayerCombo, 0, 1)
+        self.runBtn = QtWidgets.QPushButton('开始校验')
+        self.cancelBtn = QtWidgets.QPushButton('取消')
 
-        # Point Layer
-        grid.addWidget(QtWidgets.QLabel('Point Layer：'), 1, 0)
-        self.pointLayerCombo = QtWidgets.QComboBox()
-        self.pointLayerCombo.setMinimumWidth(ctrl_w)
-        grid.addWidget(self.pointLayerCombo, 1, 1)
-
-        # Validation
-        grid.addWidget(QtWidgets.QLabel('Validation：'), 2, 0)
-        self.validationCombo = QtWidgets.QComboBox()
-        self.validationCombo.setMinimumWidth(ctrl_w)
-        self.validationCombo.addItems(self.VALIDATION_ITEMS)
-        grid.addWidget(self.validationCombo, 2, 1)
-
-        # Run button (left aligned)
-        self.runBtn = QtWidgets.QPushButton('Run')
         btns = QtWidgets.QHBoxLayout()
         btns.addWidget(self.runBtn)
         btns.addStretch()
+        btns.addWidget(self.cancelBtn)
 
-        # Options (two checkboxes)
-        self.listNamesChk = QtWidgets.QCheckBox('List abnormal point names')
-        self.selectPointsChk = QtWidgets.QCheckBox('Select abnormal points')
-
-        # overall layout
         main = QtWidgets.QVBoxLayout()
-        main.setContentsMargins(6, 6, 6, 6)
-        main.addLayout(grid)
+        main.setContentsMargins(10, 10, 10, 10)
+        main.setSpacing(10)
+        main.addWidget(info)
         main.addLayout(btns)
-        main.addWidget(self.listNamesChk)
-        main.addWidget(self.selectPointsChk)
-        # compact spacing
-        main.addStretch()
         self.setLayout(main)
 
-    def _connect_signals(self):
+        self.setMinimumWidth(460)
+
         self.runBtn.clicked.connect(self._on_run)
-        self.lineLayerCombo.currentTextChanged.connect(self._on_line_changed)
-
-    def _populate_layers(self):
-        proj = QgsProject.instance()
-        self.lineLayerCombo.clear()
-        self.pointLayerCombo.clear()
-        for layer in proj.mapLayers().values():
-            try:
-                if layer.type() != QgsMapLayer.VectorLayer:
-                    continue
-                geom_type = QgsWkbTypes.geometryType(layer.wkbType())
-            except Exception:
-                continue
-            if geom_type == QgsWkbTypes.LineGeometry:
-                self.lineLayerCombo.addItem(layer.name())
-            elif geom_type == QgsWkbTypes.PointGeometry:
-                self.pointLayerCombo.addItem(layer.name())
-
-    def _on_line_changed(self, name):
-        # if needed in future: update dependent controls
-        pass
-
-    def _load_saved(self):
-        proj = QgsProject.instance()
-        ok, cfg = proj.readEntry('site_co_design', 'validation')
-        if ok and cfg:
-            try:
-                data = dict(cfg)
-                if 'line' in data and data['line'] in [self.lineLayerCombo.itemText(i) for i in range(self.lineLayerCombo.count())]:
-                    self.lineLayerCombo.setCurrentText(data['line'])
-                if 'point' in data and data['point'] in [self.pointLayerCombo.itemText(i) for i in range(self.pointLayerCombo.count())]:
-                    self.pointLayerCombo.setCurrentText(data['point'])
-                if 'item' in data and data['item'] in [self.validationCombo.itemText(i) for i in range(self.validationCombo.count())]:
-                    self.validationCombo.setCurrentText(data['item'])
-                if 'list_names' in data:
-                    try:
-                        self.listNamesChk.setChecked(bool(data.get('list_names')))
-                    except Exception:
-                        pass
-                if 'select_results' in data:
-                    try:
-                        self.selectPointsChk.setChecked(bool(data.get('select_results')))
-                    except Exception:
-                        pass
-            except Exception:
-                pass
+        self.cancelBtn.clicked.connect(self.reject)
 
     def _on_run(self):
-        line = self.lineLayerCombo.currentText()
-        point = self.pointLayerCombo.currentText()
-        item = self.validationCombo.currentText()
-        if not line:
-            QtWidgets.QMessageBox.critical(self, 'Site Co-Design', 'Please select a Line Layer')
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            '确认删除重复要素',
+            '将检查当前项目全部点、线、面图层，并删除每个图层内完全重合的重复要素。\\n\\n'
+            '每组仅保留 FID 最小的一个。是否继续？',
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.No,
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
             return
-        if not point:
-            QtWidgets.QMessageBox.critical(self, 'Site Co-Design', 'Please select a Point Layer')
-            return
-        params = {
-            'line_layer_name': line,
-            'point_layer_name': point,
-            'validation_item': item,
-            'list_names': bool(self.listNamesChk.isChecked()),
-            'select_results': bool(self.selectPointsChk.isChecked()),
-            # future: tolerance can be added
-        }
-        # save settings
-        try:
-            proj = QgsProject.instance()
-            save = dict(params)
-            save['line'] = save.pop('line_layer_name')
-            save['point'] = save.pop('point_layer_name')
-            save['item'] = save.get('validation_item')
-            proj.writeEntry('site_co_design', 'validation', save)
-        except Exception:
-            pass
 
+        self.runBtn.setEnabled(False)
         try:
-            # call unified validation runner in library
-            from .site_co_design_library import validation_run
-            validation_run(params, iface=self.iface)
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, 'Site Co-Design', f'Validation 运行出错: {str(e)}')
-        # keep dialog open so user can inspect/modify options
-
+            from .site_co_design_library import validation_layer_uniqueness_run
+            validation_layer_uniqueness_run(iface=self.iface)
+        except Exception as exc:
+            QtWidgets.QMessageBox.critical(
+                self,
+                'ODN Tools Pro',
+                f'图层唯一性校验运行出错：{exc}',
+            )
+        finally:
+            self.runBtn.setEnabled(True)
 
 
 # module exports
