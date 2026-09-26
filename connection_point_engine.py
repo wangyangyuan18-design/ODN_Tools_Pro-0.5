@@ -329,13 +329,13 @@ def run_connection_point_naming_v2(params, iface=None):
     tolerance = float(params.get('connection_tolerance') or _connection_tolerance(line))
     direction = 'clockwise' if params.get('point_name_directions_enum') == 'clockwise' else 'counter'
     naming_direction = params.get('point_name_sort_enum', 'fromConv')
-    l_prefix = params.get('l_prefix', params.get('variableL', 'L'))
+    l_prefix = params.get('l_prefix', params.get('variableL', '-CH'))
     l_suffix = params.get('l_suffix', params.get('variableLSuf', 'num'))
-    fat_prefix = params.get('fat_prefix', params.get('variableS', 'S'))
+    fat_prefix = params.get('fat_prefix', params.get('variableS', '-ODP'))
     fat_suffix = params.get('fat_suffix', params.get('variableSSuf', 'num'))
-    cl_prefix = params.get('cl_prefix', '_CL')
+    cl_prefix = params.get('cl_prefix', '-CL')
     cl_suffix = params.get('cl_suffix', 'num')
-    bb_prefix = params.get('bb_prefix', '_BB')
+    bb_prefix = params.get('bb_prefix', '-BB')
     fdt_prefix = params.get('prefix', '') or ''
 
     nodes, adjacency = _build_graph(fdt, fdt_field, node_layers, line, tolerance, log)
