@@ -101,6 +101,7 @@ def _connection_point_dialog_on_ok(self):
         'line_name_enabled': line_name_enabled,
         'line_name_direction': 'fromConv' if self.lineNameDirectionCombo.currentText().startswith('从汇聚') else 'toConv',
         'line_name_field': line_name_field,
+        'line_name_separator': self.lineNameSeparatorEdit.text(),
     }
 
     save_data = dict(params)
@@ -119,6 +120,7 @@ def _connection_point_dialog_on_ok(self):
         'line_name_enabled': line_name_enabled,
         'line_name_direction': self.lineNameDirectionCombo.currentText(),
         'line_name_field': line_name_field,
+        'line_name_separator': self.lineNameSeparatorEdit.text(),
     })
     from qgis.core import QgsProject
     QgsProject.instance().writeEntry('site_co_design', 'connectionPointNamingV2', save_data)
