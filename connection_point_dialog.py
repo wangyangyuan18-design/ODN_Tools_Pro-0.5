@@ -75,7 +75,7 @@ class ConnectionPointDialog(QtWidgets.QDialog):
         grid.addWidget(self.sortDirCombo, row, 3)
         row += 1
         grid.addWidget(QtWidgets.QLabel('L前缀'), row, 0)
-        self.lPrefixEdit = QtWidgets.QLineEdit('_L')
+        self.lPrefixEdit = QtWidgets.QLineEdit('-CH')
         grid.addWidget(self.lPrefixEdit, row, 1)
         grid.addWidget(QtWidgets.QLabel('L后缀'), row, 2)
         self.lSuffixCombo = self._combo()
@@ -108,7 +108,7 @@ class ConnectionPointDialog(QtWidgets.QDialog):
         grid.addWidget(self._section('④ FAT 命名规则'), row, 0, 1, 4)
         row += 1
         grid.addWidget(QtWidgets.QLabel('S前缀'), row, 0)
-        self.fatPrefixEdit = QtWidgets.QLineEdit('_S')
+        self.fatPrefixEdit = QtWidgets.QLineEdit('-ODP')
         grid.addWidget(self.fatPrefixEdit, row, 1)
         grid.addWidget(QtWidgets.QLabel('S后缀'), row, 2)
         self.fatSuffixCombo = self._combo()
@@ -116,7 +116,7 @@ class ConnectionPointDialog(QtWidgets.QDialog):
         grid.addWidget(self.fatSuffixCombo, row, 3)
         row += 1
         grid.addWidget(QtWidgets.QLabel('Preview'), row, 0)
-        self.fatPreview = QtWidgets.QLabel('HB01_L1_S1')
+        self.fatPreview = QtWidgets.QLabel('HB01-CH1-ODP1')
         self._style_preview(self.fatPreview)
         grid.addWidget(self.fatPreview, row, 1, 1, 3)
         row += 1
@@ -124,7 +124,7 @@ class ConnectionPointDialog(QtWidgets.QDialog):
         grid.addWidget(self._section('⑤ CL 命名规则'), row, 0, 1, 4)
         row += 1
         grid.addWidget(QtWidgets.QLabel('CL前缀'), row, 0)
-        self.clPrefixEdit = QtWidgets.QLineEdit('_CL')
+        self.clPrefixEdit = QtWidgets.QLineEdit('-CL')
         grid.addWidget(self.clPrefixEdit, row, 1)
         grid.addWidget(QtWidgets.QLabel('CL后缀'), row, 2)
         self.clSuffixCombo = self._combo()
@@ -132,7 +132,7 @@ class ConnectionPointDialog(QtWidgets.QDialog):
         grid.addWidget(self.clSuffixCombo, row, 3)
         row += 1
         grid.addWidget(QtWidgets.QLabel('Preview'), row, 0)
-        self.clPreview = QtWidgets.QLabel('HB01_L1_CL1')
+        self.clPreview = QtWidgets.QLabel('HB01-CH1-CL1')
         self._style_preview(self.clPreview)
         grid.addWidget(self.clPreview, row, 1, 1, 3)
         row += 1
@@ -140,14 +140,14 @@ class ConnectionPointDialog(QtWidgets.QDialog):
         grid.addWidget(self._section('⑥ BB 命名规则'), row, 0, 1, 4)
         row += 1
         grid.addWidget(QtWidgets.QLabel('BB前缀'), row, 0)
-        self.bbPrefixEdit = QtWidgets.QLineEdit('_BB')
+        self.bbPrefixEdit = QtWidgets.QLineEdit('-BB')
         grid.addWidget(self.bbPrefixEdit, row, 1)
         self.bbAutoCheck = QtWidgets.QCheckBox('Auto 5050/3070')
         self.bbAutoCheck.setChecked(True)
         grid.addWidget(self.bbAutoCheck, row, 2, 1, 2)
         row += 1
         grid.addWidget(QtWidgets.QLabel('Preview'), row, 0)
-        self.bbPreview = QtWidgets.QLabel('HB01_L1_BB5050')
+        self.bbPreview = QtWidgets.QLabel('HB01-CH1-BB5050')
         self._style_preview(self.bbPreview)
         grid.addWidget(self.bbPreview, row, 1, 1, 3)
         row += 1
@@ -321,9 +321,9 @@ class ConnectionPointDialog(QtWidgets.QDialog):
             self.clPreview.setText(f'{base}{lpart}{clpart}')
             self.bbPreview.setText(f'{base}{lpart}{bbpart}')
         except Exception:
-            self.fatPreview.setText('HB01_L1_S1')
-            self.clPreview.setText('HB01_L1_CL1')
-            self.bbPreview.setText('HB01_L1_BB5050')
+            self.fatPreview.setText('HB01-CH1-ODP1')
+            self.clPreview.setText('HB01-CH1-CL1')
+            self.bbPreview.setText('HB01-CH1-BB5050')
 
     def _connect_signals(self):
         self.fdtLayerCombo.currentIndexChanged.connect(self._on_fdt_changed)
@@ -388,19 +388,23 @@ class ConnectionPointDialog(QtWidgets.QDialog):
             (self.lineNameFieldCombo, 'line_name_field'),
         ):
             self._set_combo_value(combo, data.get(key))
-        saved_l_prefix = data.get('l_prefix', '_L')
-        self.lPrefixEdit.setText('_L' if str(saved_l_prefix).strip() == 'L' else saved_l_prefix)
+        saved_l_prefix = data.get('l_prefix', '-CH')
+        saved_l_prefix_text = str(saved_l_prefix).strip()
+        self.lPrefixEdit.setText('-CH' if saved_l_prefix_text in ('_L', 'L') else saved_l_prefix)
         self.lSuffixCombo.setCurrentText(data.get('l_suffix', 'num'))
         self.fdtPrefixEdit.setText(data.get('fdt_prefix', ''))
         self._set_node_row(self.fatEnable, self.fatLayerCombo, data.get('fat_layer'))
         self._set_node_row(self.clEnable, self.clLayerCombo, data.get('cl_layer'))
         self._set_node_row(self.bbEnable, self.bbLayerCombo, data.get('bb_layer'))
-        saved_s_prefix = data.get('fat_prefix', '_S')
-        self.fatPrefixEdit.setText('_S' if str(saved_s_prefix).strip() == 'S' else saved_s_prefix)
+        saved_s_prefix = data.get('fat_prefix', '-ODP')
+        saved_s_prefix_text = str(saved_s_prefix).strip()
+        self.fatPrefixEdit.setText('-ODP' if saved_s_prefix_text in ('_S', 'S') else saved_s_prefix)
         self.fatSuffixCombo.setCurrentText(data.get('fat_suffix', 'num'))
-        self.clPrefixEdit.setText(data.get('cl_prefix', '_CL'))
+        saved_cl_prefix = data.get('cl_prefix', '-CL')
+        self.clPrefixEdit.setText('-CL' if str(saved_cl_prefix).strip() == '_CL' else saved_cl_prefix)
         self.clSuffixCombo.setCurrentText(data.get('cl_suffix', 'num'))
-        self.bbPrefixEdit.setText(data.get('bb_prefix', '_BB'))
+        saved_bb_prefix = data.get('bb_prefix', '-BB')
+        self.bbPrefixEdit.setText('-BB' if str(saved_bb_prefix).strip() == '_BB' else saved_bb_prefix)
         self.bbAutoCheck.setChecked(bool(data.get('bb_auto_type', True)))
         self.addFieldEdit.setText(data.get('add_field', 'Name'))
         self._refresh_modify_fields()
