@@ -181,6 +181,11 @@ class ConnectionPointDialog(QtWidgets.QDialog):
         self.lineNameFieldCombo = self._combo(260)
         grid.addWidget(self.lineNameFieldCombo, row, 3)
         row += 1
+        grid.addWidget(QtWidgets.QLabel('连接符'), row, 0)
+        self.lineNameSeparatorEdit = QtWidgets.QLineEdit(' - ')
+        self.lineNameSeparatorEdit.setMaxLength(50)
+        grid.addWidget(self.lineNameSeparatorEdit, row, 1)
+        row += 1
 
         buttons = QtWidgets.QHBoxLayout()
         self.okBtn = QtWidgets.QPushButton('确定')
@@ -388,6 +393,8 @@ class ConnectionPointDialog(QtWidgets.QDialog):
             (self.lineNameFieldCombo, 'line_name_field'),
         ):
             self._set_combo_value(combo, data.get(key))
+        self.lineNameSeparatorEdit.setText(str(data.get('line_name_separator', ' - ')))
+
         saved_l_prefix = data.get('l_prefix', '-CH')
         saved_l_prefix_text = str(saved_l_prefix).strip()
         self.lPrefixEdit.setText('-CH' if saved_l_prefix_text in ('_L', 'L') else saved_l_prefix)
