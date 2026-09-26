@@ -8,11 +8,6 @@ from qgis.PyQt.QtCore import QSettings, QTranslator, QCoreApplication
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction, QMenu
 
-from . import site_co_design_library as _legacy_library
-from .validation_optimized import validation_run as _optimized_validation_run
-
-_legacy_library.validation_run = _optimized_validation_run
-
 from .site_co_design_dialog import (
     CableNamingDialog,
     CableSplitDialog,
