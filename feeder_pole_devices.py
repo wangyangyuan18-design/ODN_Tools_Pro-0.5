@@ -568,6 +568,7 @@ def run_feeder_devices(
     # along the feeder. A pole occurring twice is counted once.
     line_hits = []
     pole_to_hits = defaultdict(list)
+    pole_feeder_ids = defaultdict(set)
 
     for ff in feeder_layer.getFeatures():
         geom = ff.geometry()
@@ -601,6 +602,8 @@ def run_feeder_devices(
                 line_hits.append((int(ff.id()), part_index, line, unique))
                 for item in unique:
                     pole_to_hits[item[1]["key"]].append((line, item[0], item[1]))
+                    # Count FEEDER features, not vertices/parts.
+                    pole_feeder_ids[item[1]["key"]].add(int(ff.id()))
 
     # Determine each pole's corner status from each feeder passage. If any
     # passage is a corner, it is treated as a corner for device placement.
@@ -706,10 +709,55 @@ def run_feeder_devices(
     added_j = _write_devices(typej_layer, typej_points)
     added_u = _write_devices(upb_layer, upb_points)
 
+    # Write the number of distinct FEEDER features passing each selected
+    # pole into an integer field named FEEDER.
+    feeder_counts = {
+        key: len(pole_feeder_ids.get(key, set()))
+        for key in pole_info
+    }
+    feeder_field_errors = []
+    feeder_values_written = 0
+
+    for lid in pole_layer_ids:
+        layer = project.mapLayer(lid)
+        if layer is None:
+            continue
+        field_idx = layer.fields().indexOf("FEEDER")
+        own_edit = not layer.isEditable()
+        try:
+            if field_idx < 0:
+                if own_edit and not layer.startEditing():
+                    raise RuntimeError(f"无法编辑杆路图层：{layer.name()}")
+                if not layer.addAttribute(QgsField("FEEDER", QVariant.Int)):
+                    raise RuntimeError(f"无法新增FEEDER字段：{layer.name()}")
+                layer.updateFields()
+                field_idx = layer.fields().indexOf("FEEDER")
+            if field_idx < 0:
+                raise RuntimeError(f"无法找到杆路图层 {layer.name()} 的FEEDER字段。")
+
+            for pf in layer.getFeatures():
+                key = (lid, int(pf.id()))
+                count = feeder_counts.get(key, 0)
+                if pf[field_idx] != count:
+                    if not layer.changeAttributeValue(pf.id(), field_idx, count):
+                        raise RuntimeError(f"无法写入{layer.name()}的FEEDER字段，FID={pf.id()}")
+                    feeder_values_written += 1
+
+            if own_edit and not layer.commitChanges():
+                raise RuntimeError(f"提交杆路图层失败：{layer.name()}")
+        except Exception as exc:
+            if own_edit:
+                layer.rollBack()
+            feeder_field_errors.append(str(exc))
+
+    if feeder_field_errors:
+        raise RuntimeError("FEEDER字段写入失败：\n" + "\n".join(feeder_field_errors))
+
     corners = sum(1 for x in pole_info.values() if x["corner"])
     msg = (
         f"FEEDER杆上设备完成：经过杆 {len(pole_info)} 根；"
-        f"拐角杆 {corners} 根；新增 TYPE J {added_j} 个；新增 UPB {added_u} 个。"
+        f"拐角杆 {corners} 根；新增 TYPE J {added_j} 个；新增 UPB {added_u} 个；"
+        f"FEEDER字段更新 {feeder_values_written} 根杆。"
     )
     if iface:
         iface.messageBar().pushSuccess("ODN Tools Pro", msg, duration=7)
