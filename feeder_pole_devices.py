@@ -35,6 +35,14 @@ from qgis.PyQt.QtCore import QVariant
 TEMP_PREFIX = "FEEDER_归杆_临时_"
 
 
+def _pump_ui(counter, every=200):
+    if counter and counter % every == 0:
+        try:
+            QtWidgets.QApplication.processEvents()
+        except Exception:
+            pass
+
+
 def _point_from_feature(feat):
     geom = feat.geometry()
     if geom is None or geom.isEmpty():
@@ -221,6 +229,7 @@ def _snap_geometry(geom, pole_records, spatial_index, tolerance_units):
                 part_collapsed = True
                 continue
             output.append(target)
+            _pump_ui(snapped_vertices + unsnapped_vertices, 2000)
 
         if part_collapsed:
             collapsed_parts += 1
@@ -285,7 +294,8 @@ def _snap_feeder(
 
     project = QgsProject.instance()
 
-    for source_feature in source_layer.getFeatures():
+    for source_index, source_feature in enumerate(source_layer.getFeatures(), start=1):
+        _pump_ui(source_index, 100)
         source_geom = source_feature.geometry()
         if source_geom is None or source_geom.isEmpty():
             continue
@@ -411,7 +421,8 @@ def _analyse_feeder(feeder_layer, pole_records, pole_index, source_to_analysis, 
     pole_to_hits = defaultdict(list)
     pole_feeder_ids = defaultdict(set)
 
-    for feeder_feature in feeder_layer.getFeatures():
+    for feeder_index, feeder_feature in enumerate(feeder_layer.getFeatures(), start=1):
+        _pump_ui(feeder_index, 50)
         geom = feeder_feature.geometry()
         if geom is None or geom.isEmpty():
             continue
@@ -500,8 +511,9 @@ def _write_points_without_existing_check(layer, points_analysis_crs, points):
 
     added = 0
     try:
-        for point in points:
-            target_point = _transform_point(point, transform)
+        for point_index, point in enumerate(points, start=1):
+        _pump_ui(point_index, 50)
+        target_point = _transform_point(point, transform)
             feature = QgsFeature(layer.fields())
             feature.setGeometry(QgsGeometry.fromPointXY(target_point))
             if not layer.addFeature(feature):
@@ -548,7 +560,8 @@ def _write_feeder_field(pole_layer_ids, pole_info, pole_feeder_ids):
                     "杆路图层 %s 中无法找到FEEDER字段。" % layer.name()
                 )
 
-            for feature in layer.getFeatures():
+            for feature_index, feature in enumerate(layer.getFeatures(), start=1):
+                _pump_ui(feature_index, 250)
                 key = (layer_id, int(feature.id()))
                 value = len(pole_feeder_ids.get(key, set()))
                 if feature[field_idx] != value:
