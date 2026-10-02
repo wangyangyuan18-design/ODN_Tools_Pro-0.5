@@ -584,8 +584,8 @@ def _write_feeder_field(pole_layer_ids, pole_info, pole_feeder_ids):
     return field_updates
 
 
-def _build_device_keys(line_hits, pole_info):
-    """Return TYPE J and UPB keys using the required sequential rule."""
+def _build_device_keys(line_hits, pole_info, corner_angle):
+    """Return TYPE J and UPB keys using per-FEEDER corner state."""
     typej_keys = set()
     upb_keys = set()
     processed_keys = set()
@@ -606,8 +606,11 @@ def _build_device_keys(line_hits, pole_info):
             if key in processed_keys:
                 continue
 
-            info = pole_info[key]
-            if info["corner"]:
+            # Corner state belongs to this FEEDER passage, not globally
+            # to the pole. A shared pole may be straight on one FEEDER and
+            # a corner on another.
+            is_corner = _angle_at_line_position(line, location) <= corner_angle
+            if is_corner:
                 for idx, (_, segment_record) in enumerate(segment):
                     segment_key = segment_record["key"]
                     if segment_key in processed_keys:
@@ -722,6 +725,7 @@ class FeederDeviceDialog(QtWidgets.QDialog, _PoleSelectorMixin):
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         )
         self.run_btn = buttons.button(QtWidgets.QDialogButtonBox.Ok)
+        self.cancel_btn = buttons.button(QtWidgets.QDialogButtonBox.Cancel)
         self.run_btn.setText("运行")
         buttons.accepted.connect(self._run)
         buttons.rejected.connect(self.reject)
@@ -781,10 +785,9 @@ class FeederDeviceDialog(QtWidgets.QDialog, _PoleSelectorMixin):
             )
             return
 
-        self.run_btn = self.run_btn if hasattr(self, "run_btn") else None
         try:
-            if self.run_btn is not None:
-                self.run_btn.setEnabled(False)
+            self.run_btn.setEnabled(False)
+            self.cancel_btn.setEnabled(False)
             result = run_feeder_devices(
                 pole_ids,
                 feeder,
@@ -800,8 +803,8 @@ class FeederDeviceDialog(QtWidgets.QDialog, _PoleSelectorMixin):
             QtWidgets.QMessageBox.critical(
                 self, "FEEDER处理失败", str(exc)
             )
-            if self.run_btn is not None:
-                self.run_btn.setEnabled(True)
+            self.run_btn.setEnabled(True)
+            self.cancel_btn.setEnabled(True)
 
 
 def run_feeder_snap(pole_layer_ids, feeder_layer, tolerance, iface=None):
@@ -879,7 +882,9 @@ def run_feeder_devices(
         corner_angle,
     )
 
-    typej_keys, upb_keys = _build_device_keys(line_hits, pole_info)
+    typej_keys, upb_keys = _build_device_keys(
+        line_hits, pole_info, corner_angle
+    )
 
     typej_points = [pole_info[key]["point"] for key in typej_keys]
     upb_points = [pole_info[key]["point"] for key in upb_keys]
