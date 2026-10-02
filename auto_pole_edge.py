@@ -714,7 +714,7 @@ class AutoPoleEdgeDialog(QtWidgets.QDialog):
                 "光缆图层：%d\n"
                 "处理光缆要素：%d\n"
                 "包含有效杆序的光缆：%d\n"
-                "涉及杆点：%d\n"
+                "杆经过次数（含同一杆重复经过）：%d\n"
                 "新生成 POLE EDGE：%d\n"
                 "跳过重复边：%d\n"
                 "不足 2 杆未生成：%d\n"
@@ -992,9 +992,6 @@ class AutoPoleEdgeDialog(QtWidgets.QDialog):
                     else:
                         counters["no_edge_cables"] += 1
 
-                    if not cable_added_any and len(cable_seen) >= 2:
-                        # All possible edges already existed or were collapsed.
-                        pass
 
             if batch:
                 ok, _ = output_layer.addFeatures(batch)
