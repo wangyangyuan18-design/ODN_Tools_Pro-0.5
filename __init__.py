@@ -15,6 +15,7 @@ def classFactory(iface):
     from .overlength_pole import OverlengthPoleDialog
     from .feeder_pole_devices import FeederDeviceDialog
     from .distribution_cable_pole_stats import DistributionCablePoleDialog
+    from .auto_pole_edge import AutoPoleEdgeDialog
 
     import os
 
@@ -30,6 +31,12 @@ def classFactory(iface):
                 icon_path,
                 self.tr('杆路轨迹自动连线'),
                 self.pole_trace_connect,
+                parent=main_window,
+            )
+            self.add_action(
+                icon_path,
+                self.tr('光缆全自动连线（生成 POLE EDGE）'),
+                self.auto_pole_edge,
                 parent=main_window,
             )
             self.add_action(
@@ -53,6 +60,9 @@ def classFactory(iface):
 
         def pole_trace_connect(self):
             PoleTraceDialog(self.iface, self.iface.mainWindow()).exec_()
+
+        def auto_pole_edge(self):
+            AutoPoleEdgeDialog(self.iface, self.iface.mainWindow()).exec_()
 
         def overlength_pole(self):
             OverlengthPoleDialog(self.iface, self.iface.mainWindow()).exec_()
