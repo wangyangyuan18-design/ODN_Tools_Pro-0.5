@@ -13,6 +13,7 @@ def classFactory(iface):
     from .site_co_design_impl import SiteCoDesign
     from .pole_trace_connect import PoleTraceDialog
     from .overlength_pole import OverlengthPoleDialog
+    from .feeder_pole_devices import FeederSnapDialog, FeederDeviceDialog
 
     import os
 
@@ -36,11 +37,29 @@ def classFactory(iface):
                 self.overlength_pole,
                 parent=main_window,
             )
+            self.add_action(
+                icon_path,
+                self.tr('FEEDER归杆'),
+                self.feeder_snap,
+                parent=main_window,
+            )
+            self.add_action(
+                icon_path,
+                self.tr('FEEDER杆上设备布置'),
+                self.feeder_devices,
+                parent=main_window,
+            )
 
         def pole_trace_connect(self):
             PoleTraceDialog(self.iface, self.iface.mainWindow()).exec_()
 
         def overlength_pole(self):
             OverlengthPoleDialog(self.iface, self.iface.mainWindow()).exec_()
+
+        def feeder_snap(self):
+            FeederSnapDialog(self.iface, self.iface.mainWindow()).exec_()
+
+        def feeder_devices(self):
+            FeederDeviceDialog(self.iface, self.iface.mainWindow()).exec_()
 
     return ODNToolsPro(iface)
