@@ -3,7 +3,7 @@
 
 
 def classFactory(iface):
-    """Load the ODN Tools Pro plugin with the six supported modules."""
+    """Load the ODN Tools Pro plugin with the current supported ODN design tools."""
     from . import connection_point_engine
     from . import connection_point_engine_v4
     connection_point_engine.run_connection_point_naming_v2 = (
