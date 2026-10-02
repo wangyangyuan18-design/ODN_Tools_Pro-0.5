@@ -12,6 +12,7 @@ from qgis.PyQt import QtWidgets, QtCore
 from qgis.core import (
     QgsFeature, QgsGeometry, QgsMapLayerType, QgsPointXY, QgsProject,
     QgsSpatialIndex, QgsWkbTypes, QgsCoordinateTransform, QgsRectangle, QgsField,
+    QgsVectorLayer,
 )
 from qgis.PyQt.QtCore import QVariant
 
@@ -176,7 +177,7 @@ class FeederSnapDialog(QtWidgets.QDialog, _PoleSelectorMixin):
 
         note = QtWidgets.QLabel(
             "只复制FEEDER到临时内存图层，不修改原FEEDER。\n"
-            "同一条线两个端点若归到同一根杆，只计一次；中间顶点和线形保持不变。"
+            "首、尾及中间所有顶点均按设定距离归到最近杆；相邻顶点归到同一根杆时自动合并，不产生多余顶点。"
         )
         note.setWordWrap(True)
         note.setStyleSheet("color:#666;")
@@ -319,7 +320,7 @@ def run_feeder_snap(pole_layer_ids, feeder_layer, tolerance, iface=None):
     msg = (
         f"FEEDER归杆完成：原线 {total} 条，生成临时线 {out.featureCount()} 条；"
         f"发生顶点归杆 {snapped} 条；合并多余顶点 {collapsed} 条；"
-        f"未找到 {unsnapped_vertices} 个顶点的5m内杆位。"
+        f"未找到 {unsnapped_vertices} 个顶点在设定距离内的杆位。"
     )
     if iface:
         iface.messageBar().pushSuccess("ODN Tools Pro", msg, duration=8)
