@@ -1,17 +1,17 @@
 [general]
 name=ODN Tools Pro
 qgisMinimumVersion=3.40
-description=ODN/FTTH design naming, cable processing, layer uniqueness validation, pole trace connection and overlength pole tools
+description=ODN/FTTH design naming, cable processing, layer uniqueness validation, pole trace connection, overlength pole tools, FEEDER pole/device tools and Distribution Cable pole statistics
 author=YUAN
-version=1.6.0
-about=ODN/FTTH tools for connection point naming, cable naming, cable splitting, layer uniqueness validation, interactive pole trace connection, overlength pole insertion, FEEDER pole snapping and TYPE J/UPB placement.
+version=1.7.0
+about=ODN/FTTH tools for connection point naming, cable naming, cable splitting, layer uniqueness validation, interactive pole trace connection, overlength pole insertion, FEEDER pole snapping and TYPE J/UPB placement, and Distribution Cable pole snapping/statistics.
 category=Vector
 icon=connectionPointNaming.svg
 experimental=False
 deprecated=False
 hasProcessingProvider=no
 server=False
-tags=ODN, FTTH, telecom, fiber, cable, FAT, FDT, closure, branch box, validation, pole, trace, connect, overlength, feeder, TYPE J, UPB
+tags=ODN, FTTH, telecom, fiber, cable, FAT, FDT, closure, branch box, validation, pole, trace, connect, overlength, feeder, TYPE J, UPB, Distribution Cable, DC
 homepage=https://github.com/wangyangyuan18-design/ODN_Tools_Pro
 repository=https://github.com/wangyangyuan18-design/ODN_Tools_Pro
 tracker=https://github.com/wangyangyuan18-design/ODN_Tools_Pro/issues
