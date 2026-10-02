@@ -406,7 +406,7 @@ def _angle_at_line_position(line, position):
     return math.degrees(math.acos(dot))
 
 
-def _analyse_feeder(feeder_layer, pole_records, pole_index, tolerance_units, corner_angle):
+def _analyse_feeder(feeder_layer, pole_records, pole_index, source_to_analysis, tolerance_units, corner_angle):
     line_hits = []
     pole_to_hits = defaultdict(list)
     pole_feeder_ids = defaultdict(set)
@@ -416,6 +416,7 @@ def _analyse_feeder(feeder_layer, pole_records, pole_index, tolerance_units, cor
         if geom is None or geom.isEmpty():
             continue
 
+        geom = _transform_geometry(geom, source_to_analysis)
         parts = _line_parts(geom)
         for part_index, points in enumerate(parts):
             line = QgsGeometry.fromPolylineXY(points)
@@ -854,6 +855,7 @@ def run_feeder_devices(
         temp_layer,
         pole_records,
         pole_index,
+        source_to_analysis,
         tolerance_units,
         corner_angle,
     )
