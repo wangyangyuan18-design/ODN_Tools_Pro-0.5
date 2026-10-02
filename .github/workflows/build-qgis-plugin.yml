@@ -26,6 +26,12 @@ jobs:
           grep -q '^version=' metadata.txt
           test -f __init__.py
 
+      - name: Validate Python syntax
+        shell: bash
+        run: |
+          set -e
+          find . -type f -name '*.py' -print0 | xargs -0 -n1 python -m py_compile
+
       - name: Build installable QGIS plugin ZIP
         shell: bash
         run: |
