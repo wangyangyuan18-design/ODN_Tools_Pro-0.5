@@ -455,28 +455,44 @@ def _angle_at_line_position(line, dist):
     return math.degrees(math.acos(dot))
 
 
-def _existing_point_near(layer, point, tolerance=0.5):
+def _filter_new_points(layer, points, tolerance=0.5):
+    existing = []
     for f in layer.getFeatures():
         p = _point_from_feature(f)
-        if p is not None and p.distance(point) <= tolerance:
-            return True
-    return False
+        if p is not None:
+            existing.append(p)
+    out = []
+    for point in points:
+        if any(point.distance(p) <= tolerance for p in existing):
+            continue
+        if any(point.distance(p) <= tolerance for p in out):
+            continue
+        out.append(QgsPointXY(point))
+    return out
 
 
-def _write_device(layer, point):
+def _write_devices(layer, points):
+    if not points:
+        return 0
     own_edit = not layer.isEditable()
     if own_edit and not layer.startEditing():
         raise RuntimeError(f"无法编辑图层：{layer.name()}")
-    f = QgsFeature(layer.fields())
-    f.setGeometry(QgsGeometry.fromPointXY(point))
-    if not layer.addFeature(f):
+    added = 0
+    try:
+        for point in points:
+            f = QgsFeature(layer.fields())
+            f.setGeometry(QgsGeometry.fromPointXY(point))
+            if not layer.addFeature(f):
+                raise RuntimeError(f"无法向图层写入要素：{layer.name()}")
+            added += 1
+        if own_edit and not layer.commitChanges():
+            layer.rollBack()
+            raise RuntimeError(f"提交图层失败：{layer.name()}")
+        return added
+    except Exception:
         if own_edit:
             layer.rollBack()
-        raise RuntimeError(f"无法向图层写入要素：{layer.name()}")
-    if own_edit and not layer.commitChanges():
-        layer.rollBack()
-        raise RuntimeError(f"提交图层失败：{layer.name()}")
-    return True
+        raise
 
 
 def run_feeder_devices(
@@ -578,18 +594,17 @@ def run_feeder_devices(
     # Every passed pole without TYPE J receives UPB, including corners.
     upb_keys = set(pole_info.keys()) - typej_keys
 
-    added_j = 0
-    added_u = 0
-    for key in typej_keys:
-        p = pole_info[key]["point"]
-        if not _existing_point_near(typej_layer, p):
-            _write_device(typej_layer, p)
-            added_j += 1
-    for key in upb_keys:
-        p = pole_info[key]["point"]
-        if not _existing_point_near(upb_layer, p):
-            _write_device(upb_layer, p)
-            added_u += 1
+    if typej_layer.id() == upb_layer.id():
+        raise RuntimeError("TYPE J图层和UPB图层不能选择同一个图层。")
+
+    typej_points = _filter_new_points(
+        typej_layer, [pole_info[k]["point"] for k in typej_keys]
+    )
+    upb_points = _filter_new_points(
+        upb_layer, [pole_info[k]["point"] for k in upb_keys]
+    )
+    added_j = _write_devices(typej_layer, typej_points)
+    added_u = _write_devices(upb_layer, upb_points)
 
     corners = sum(1 for x in pole_info.values() if x["corner"])
     msg = (
