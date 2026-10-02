@@ -1627,8 +1627,15 @@ def cable_split_run(params: dict, iface=None):
     pt_index = QgsSpatialIndex()
     pt_map = {}
     uid = 1
+    total_points = 0
     for pl in point_layers:
-        for pf in pl.getFeatures():
+        for point_index, pf in enumerate(pl.getFeatures(), start=1):
+            if point_index % 500 == 0:
+                try:
+                    QtWidgets.QApplication.processEvents()
+                except Exception:
+                    pass
+            total_points += 1
             pg = pf.geometry()
             if pg is None or pg.isEmpty():
                 continue
@@ -1663,7 +1670,6 @@ def cable_split_run(params: dict, iface=None):
     # logging header
     log_lines = []
     line_feats = list(line_layer.getFeatures())
-    total_points = sum(1 for _ in (f for layer in point_layers for f in layer.getFeatures()))
     log_lines.append('========================================')
     log_lines.append(f'Input Lines : {len(line_feats)}')
     log_lines.append(f'Point Layers : {len(point_layers)}')
@@ -1674,6 +1680,7 @@ def cable_split_run(params: dict, iface=None):
     # prepare output layer
     segment_layer = _build_segment_layer(line_layer, layer_name='SEGMENT BREAK')
     output_features = []
+    provider = segment_layer.dataProvider()
 
     total_output_segments = 0
     total_split_points = 0
@@ -1681,6 +1688,11 @@ def cable_split_run(params: dict, iface=None):
     failed_lines = []
 
     for idx, lf in enumerate(line_feats):
+        if idx and idx % 50 == 0:
+            try:
+                QtWidgets.QApplication.processEvents()
+            except Exception:
+                pass
         lg = lf.geometry()
         if lg is None or lg.isEmpty():
             log_lines.append('----------------------------------------')
@@ -1727,7 +1739,12 @@ def cable_split_run(params: dict, iface=None):
             candidate_ids = []
 
         points_on_line = []
-        for cid in candidate_ids:
+        for candidate_index, cid in enumerate(candidate_ids, start=1):
+            if candidate_index % 500 == 0:
+                try:
+                    QtWidgets.QApplication.processEvents()
+                except Exception:
+                    pass
             entry = pt_map.get(cid)
             if entry is None:
                 continue
@@ -1860,11 +1877,19 @@ def cable_split_run(params: dict, iface=None):
             except Exception:
                 pass
 
-        # add output features
+        # add output features in bounded batches to avoid growing one huge
+        # Python list for large cable-splitting jobs.
         if segment_geoms:
             for geom in segment_geoms:
                 feat = _copy_segment_feature(lf, segment_layer.fields(), geom)
                 output_features.append(feat)
+                if len(output_features) >= 1000:
+                    provider.addFeatures(output_features)
+                    output_features.clear()
+                    try:
+                        QtWidgets.QApplication.processEvents()
+                    except Exception:
+                        pass
 
     # summary
     log_lines.append('========================================')
@@ -1888,10 +1913,10 @@ def cable_split_run(params: dict, iface=None):
             except Exception:
                 continue
 
-    # write features
-    provider = segment_layer.dataProvider()
+    # write remaining buffered features
     if output_features:
         provider.addFeatures(output_features)
+        output_features.clear()
 
     if output_path:
         output_layer = _save_segment_layer(segment_layer, output_path)
