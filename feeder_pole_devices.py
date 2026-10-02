@@ -561,24 +561,21 @@ def run_feeder_devices(
             "hits": hits,
         }
 
-    # TYPE J alternation is calculated independently along each feeder part.
-    # Corners are never selected as TYPE J. UPB is then the fallback for every
-    # passed pole without TYPE J.
-    typej_keys = set()
+    # TYPE J alternation is calculated from ALL passed poles in feeder order.
+    # A corner still occupies its pole position in the alternating sequence;
+    # it is then removed from TYPE J. This preserves "every other pole" spacing.
+    typej_candidates = set()
     for _, _, line, hits in line_hits:
-        eligible = []
-        for loc, rec, _ in hits:
-            info = pole_info.get(rec["key"])
-            if info and not info["corner"]:
-                eligible.append((loc, rec["key"]))
-        # The source geometry order is used. Start/end reversal only changes
-        # which alternating parity is selected, which is unavoidable without a
-        # project-specific feeder direction attribute.
-        for idx, (_, key) in enumerate(eligible):
+        for idx, (_, rec, _) in enumerate(hits):
             if idx % 2 == 0:
-                typej_keys.add(key)
+                typej_candidates.add(rec["key"])
 
-    # Never place TYPE J on a corner. Any passed pole without TYPE J receives UPB.
+    typej_keys = {
+        key for key in typej_candidates
+        if key in pole_info and not pole_info[key]["corner"]
+    }
+
+    # Every passed pole without TYPE J receives UPB, including corners.
     upb_keys = set(pole_info.keys()) - typej_keys
 
     added_j = 0
