@@ -11,7 +11,7 @@ from collections import defaultdict
 from qgis.PyQt import QtWidgets, QtCore
 from qgis.core import (
     QgsFeature, QgsGeometry, QgsMapLayerType, QgsPointXY, QgsProject,
-    QgsSpatialIndex, QgsWkbTypes, QgsCoordinateTransform, QgsRectangle,
+    QgsSpatialIndex, QgsWkbTypes, QgsCoordinateTransform, QgsRectangle, QgsField,
 )
 from qgis.PyQt.QtCore import QVariant
 
@@ -78,22 +78,56 @@ def _line_endpoints(g):
     return QgsPointXY(parts[0][0]), QgsPointXY(parts[-1][-1])
 
 
-def _snap_endpoint_geometry(g, start_pt, end_pt):
-    """Move only the first and last vertices; preserve all intermediate shape."""
+def _snap_all_vertices_geometry(g, pole_records, tolerance):
+    """Snap every FEEDER vertex to its nearest pole and remove duplicate
+    consecutive vertices which collapse onto the same pole.
+
+    The original FEEDER geometry is never changed.  For multipart lines each
+    part is processed independently.  A vertex without a pole inside the
+    configured tolerance is retained and reported to the caller.
+    """
     parts = _line_parts(g)
     if not parts:
-        return None
+        return None, 0, 0
+
     out_parts = []
-    for idx, pts in enumerate(parts):
-        p = [QgsPointXY(x) for x in pts]
-        if idx == 0 and start_pt is not None:
-            p[0] = QgsPointXY(start_pt)
-        if idx == len(parts) - 1 and end_pt is not None:
-            p[-1] = QgsPointXY(end_pt)
-        out_parts.append(p)
+    snapped_vertices = 0
+    unsnapped_vertices = 0
+
+    for pts in parts:
+        out = []
+        last_key = None
+        for pt in pts:
+            rec, _ = _nearest_pole(pt, pole_records, tolerance)
+            if rec is not None:
+                target = QgsPointXY(rec["point"])
+                key = (rec["layer_id"], rec["fid"])
+                snapped_vertices += 1
+            else:
+                target = QgsPointXY(pt)
+                key = None
+                unsnapped_vertices += 1
+
+            # If two adjacent vertices resolve to the same pole, keep only
+            # one vertex. This is important for both geometry cleanliness and
+            # the "one pole = one passage point" rule.
+            if out and target.distance(out[-1]) <= 1e-9:
+                if key is not None:
+                    last_key = key
+                continue
+
+            out.append(target)
+            last_key = key
+
+        if len(out) >= 2:
+            out_parts.append(out)
+
+    if not out_parts:
+        return None, snapped_vertices, unsnapped_vertices
+
     if g.isMultipart():
-        return QgsGeometry.fromMultiPolylineXY(out_parts)
-    return QgsGeometry.fromPolylineXY(out_parts[0])
+        return QgsGeometry.fromMultiPolylineXY(out_parts), snapped_vertices, unsnapped_vertices
+    return QgsGeometry.fromPolylineXY(out_parts[0]), snapped_vertices, unsnapped_vertices
 
 
 class _PoleSelectorMixin:
@@ -194,8 +228,8 @@ def run_feeder_snap(pole_layer_ids, feeder_layer, tolerance, iface=None):
     project = QgsProject.instance()
     poles_by_crs = defaultdict(list)
 
-    # Use FEEDER CRS as the analysis CRS so the 5 m tolerance is applied in
-    # the same coordinate system as the source data.
+    # Use FEEDER CRS as the analysis CRS so the configured distance is applied
+    # consistently to the source FEEDER and all selected pole layers.
     for lid in pole_layer_ids:
         layer = project.mapLayer(lid)
         if layer is None:
@@ -231,46 +265,52 @@ def run_feeder_snap(pole_layer_ids, feeder_layer, tolerance, iface=None):
     pr.addAttributes([
         QgsField("SNAP_START", QVariant.String),
         QgsField("SNAP_END", QVariant.String),
+        QgsField("SNAP_VERTS", QVariant.Int),
+        QgsField("UNSNAPPED", QVariant.Int),
     ])
     out.updateFields()
 
-    total = snapped = collapsed = 0
+    total = snapped = collapsed = unsnapped_vertices = 0
     for src in feeder_layer.getFeatures():
         g = src.geometry()
         if g is None or g.isEmpty():
             continue
         total += 1
-        a, b = _line_endpoints(g)
-        if a is None or b is None:
-            continue
-        pa, da = _nearest_pole(a, pole_records, tolerance)
-        pb, db = _nearest_pole(b, pole_records, tolerance)
-        if pa is not None:
-            a2 = pa["point"]
-        else:
-            a2 = a
-        if pb is not None:
-            b2 = pb["point"]
-        else:
-            b2 = b
 
-        ng = _snap_endpoint_geometry(g, a2, b2)
+        ng, snap_count, unsnap_count = _snap_all_vertices_geometry(
+            g, pole_records, tolerance
+        )
         if ng is None:
             continue
+        unsnapped_vertices += unsnap_count
+
+        # Record the actual first/last pole after all-vertex snapping.
+        new_parts = _line_parts(ng)
+        start_rec = end_rec = None
+        if new_parts:
+            sa, sb = new_parts[0][0], new_parts[-1][-1]
+            start_rec, _ = _nearest_pole(sa, pole_records, 1e-9)
+            end_rec, _ = _nearest_pole(sb, pole_records, 1e-9)
 
         nf = QgsFeature(out.fields())
         attrs = list(src.attributes())
         attrs.extend([
-            f"{pa['layer_id']}:{pa['fid']}" if pa else "",
-            f"{pb['layer_id']}:{pb['fid']}" if pb else "",
+            f"{start_rec['layer_id']}:{start_rec['fid']}" if start_rec else "",
+            f"{end_rec['layer_id']}:{end_rec['fid']}" if end_rec else "",
+            snap_count,
+            unsnap_count,
         ])
         nf.setAttributes(attrs)
         nf.setGeometry(ng)
         pr.addFeature(nf)
 
-        if pa or pb:
+        if snap_count:
             snapped += 1
-        if pa and pb and pa["layer_id"] == pb["layer_id"] and pa["fid"] == pb["fid"]:
+        # Count collapsed geometry where multiple source vertices were reduced
+        # to fewer output vertices.
+        src_vertex_count = sum(len(p) for p in _line_parts(g))
+        out_vertex_count = sum(len(p) for p in _line_parts(ng))
+        if out_vertex_count < src_vertex_count:
             collapsed += 1
 
     out.updateExtents()
@@ -278,11 +318,13 @@ def run_feeder_snap(pole_layer_ids, feeder_layer, tolerance, iface=None):
 
     msg = (
         f"FEEDER归杆完成：原线 {total} 条，生成临时线 {out.featureCount()} 条；"
-        f"有端点归杆 {snapped} 条；同杆双端点去重 {collapsed} 条。"
+        f"发生顶点归杆 {snapped} 条；合并多余顶点 {collapsed} 条；"
+        f"未找到 {unsnapped_vertices} 个顶点的5m内杆位。"
     )
     if iface:
-        iface.messageBar().pushSuccess("ODN Tools Pro", msg, duration=6)
+        iface.messageBar().pushSuccess("ODN Tools Pro", msg, duration=8)
     return out
+
 
 
 class FeederDeviceDialog(QtWidgets.QDialog, _PoleSelectorMixin):
@@ -577,22 +619,79 @@ def run_feeder_devices(
             "hits": hits,
         }
 
-    # TYPE J alternation is calculated from ALL passed poles in feeder order.
-    # A corner still occupies its pole position in the alternating sequence;
-    # it is then removed from TYPE J. This preserves "every other pole" spacing.
-    typej_candidates = set()
+    # Process FEEDERs in source order.  Each FEEDER is split at corner
+    # poles.  Every segment starts a fresh TYPE J sequence:
+    #
+    #   straight segment: J, UPB, J, UPB, ...
+    #   corner pole: UPB, then reset the sequence after the corner
+    #
+    # A global processed-pole set is used across FEEDERs.  Therefore, if a
+    # second FEEDER follows poles already handled by the first FEEDER, those
+    # poles are skipped and calculation resumes from the first unprocessed
+    # pole.  This is the required "write by line" behavior.
+    typej_keys = set()
+    upb_keys = set()
+    processed_keys = set()
+
     for _, _, line, hits in line_hits:
-        for idx, (_, rec, _) in enumerate(hits):
+        # A hit may be encountered more than once when multipart geometry or
+        # multiple selected pole layers contain the same physical pole.
+        ordered = []
+        seen = set()
+        for loc, rec, _ in hits:
+            key = rec["key"]
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append((loc, rec))
+
+        # Split into fresh sequences at every corner.  A corner itself is
+        # always UPB and is also a reset point.
+        segment = []
+        for loc, rec in ordered:
+            key = rec["key"]
+
+            if key in processed_keys:
+                # Already written by an earlier FEEDER: do not create another
+                # TYPE J/UPB and do not let the overlap affect this FEEDER's
+                # new-device alternation.
+                continue
+
+            info = pole_info[key]
+            if info["corner"]:
+                # Finish the straight segment before this corner.
+                for idx, (_, srec) in enumerate(segment):
+                    skey = srec["key"]
+                    if skey in processed_keys:
+                        continue
+                    if idx % 2 == 0:
+                        typej_keys.add(skey)
+                    else:
+                        upb_keys.add(skey)
+                    processed_keys.add(skey)
+                segment = []
+
+                # Corner itself is UPB and resets the sequence.
+                upb_keys.add(key)
+                processed_keys.add(key)
+            else:
+                segment.append((loc, rec))
+
+        # Flush the final straight segment.
+        for idx, (_, rec) in enumerate(segment):
+            key = rec["key"]
+            if key in processed_keys:
+                continue
             if idx % 2 == 0:
-                typej_candidates.add(rec["key"])
+                typej_keys.add(key)
+            else:
+                upb_keys.add(key)
+            processed_keys.add(key)
 
-    typej_keys = {
-        key for key in typej_candidates
-        if key in pole_info and not pole_info[key]["corner"]
-    }
+    # Safety: every passed pole not selected as TYPE J gets UPB.  This also
+    # covers poles whose corner status was discovered from another FEEDER.
+    upb_keys.update(set(pole_info.keys()) - typej_keys - upb_keys)
 
-    # Every passed pole without TYPE J receives UPB, including corners.
-    upb_keys = set(pole_info.keys()) - typej_keys
 
     if typej_layer.id() == upb_layer.id():
         raise RuntimeError("TYPE J图层和UPB图层不能选择同一个图层。")
