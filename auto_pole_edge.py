@@ -4,10 +4,11 @@
 The source cable layers are never modified.  The tool:
 1) loads one or more pole point layers;
 2) loads one or more existing cable line layers (e.g. DC / FEEDER);
-3) maps each cable route to the poles it passes within a real-world
+3) detects every pole-pass occurrence along each cable route within a real-world
    tolerance distance;
-4) orders the passed poles along the cable geometry;
-5) creates pole-to-pole POLE EDGE features in the selected output line layer.
+4) orders those occurrences along the cable geometry while preserving repeated
+   visits to the same pole;
+5) creates the global union of adjacent pole-to-pole POLE EDGE connections.
 
 The analysis distance is CRS-adaptive: projected CRSs are converted to metres
 and geographic CRSs are analysed in a local UTM CRS.
@@ -229,58 +230,98 @@ def _part_measure(part_geom, point):
         return None
 
 
-def _collect_poles_on_part(
-    part_geom,
+def _collect_pole_occurrences_on_part(
+    part_points,
     pole_index,
     index_map,
     tolerance_units,
-    seen_keys,
     cancel_callback,
     counter,
 ):
-    if part_geom is None or part_geom.isEmpty():
+    """Return every meaningful pole-pass occurrence along a line part.
+
+    A pole may occur more than once when a cable route loops back through it,
+    e.g. 1 -> 2 -> 1 -> 3 -> 4.  We therefore analyse each segment instead
+    of calling lineLocatePoint() once for the whole line.  Hits at a shared
+    segment vertex are merged by measure, while distinct later visits to the
+    same pole are preserved.
+    """
+    if not part_points or len(part_points) < 2:
         return [], counter
 
-    bbox = part_geom.boundingBox()
-    bbox.grow(float(tolerance_units))
-    candidate_ids = pole_index.intersects(bbox)
+    occurrences = []
 
-    hits = []
-    local_seen = set()
+    # A very small measure tolerance removes duplicate hits caused by the
+    # same pole being found on both sides of a shared polyline vertex.  It is
+    # intentionally much smaller than the user-configured 5 m snap distance,
+    # so real loop-backs remain separate occurrences.
+    measure_epsilon = max(
+        1e-6,
+        min(0.001, abs(float(tolerance_units)) * 1e-5),
+    )
 
-    for candidate_pos, index_id in enumerate(candidate_ids, start=1):
-        counter += 1
-        if candidate_pos % 250 == 0:
-            _pump_ui(counter, 250)
-            if cancel_callback():
-                return hits, counter
+    cumulative_measure = 0.0
+    for segment_index in range(len(part_points) - 1):
+        if cancel_callback():
+            return occurrences, counter
 
-        record = index_map.get(index_id)
-        if record is None:
-            continue
-        key = record["key"]
-        if key in local_seen:
-            continue
-
-        pole_geom = QgsGeometry.fromPointXY(record["point"])
-        try:
-            distance = float(part_geom.distance(pole_geom))
-        except Exception:
-            continue
-        if distance > tolerance_units:
+        p1 = QgsPointXY(part_points[segment_index])
+        p2 = QgsPointXY(part_points[segment_index + 1])
+        if p1 == p2:
             continue
 
-        measure = _part_measure(part_geom, record["point"])
-        if measure is None or measure < 0:
+        segment_geom = QgsGeometry.fromPolylineXY([p1, p2])
+        segment_length = float(segment_geom.length())
+        if segment_length <= 0:
             continue
 
-        local_seen.add(key)
-        seen_keys.add(key)
-        hits.append((measure, distance, key, record))
+        bbox = segment_geom.boundingBox()
+        bbox.grow(float(tolerance_units))
+        candidate_ids = pole_index.intersects(bbox)
 
-    # Stable ordering: cable position first, then perpendicular distance,
-    # then layer/FID identity.
-    hits.sort(
+        for candidate_pos, index_id in enumerate(candidate_ids, start=1):
+            counter += 1
+            if candidate_pos % 250 == 0:
+                _pump_ui(counter, 250)
+                if cancel_callback():
+                    return occurrences, counter
+
+            record = index_map.get(index_id)
+            if record is None:
+                continue
+
+            pole_geom = QgsGeometry.fromPointXY(record["point"])
+            try:
+                distance = float(segment_geom.distance(pole_geom))
+            except Exception:
+                continue
+            if distance > tolerance_units:
+                continue
+
+            try:
+                local_measure = float(
+                    segment_geom.lineLocatePoint(pole_geom)
+                )
+            except Exception:
+                continue
+            if local_measure < 0:
+                continue
+
+            occurrences.append(
+                (
+                    cumulative_measure + min(local_measure, segment_length),
+                    distance,
+                    record["key"],
+                    record,
+                )
+            )
+
+        cumulative_measure += segment_length
+
+    if not occurrences:
+        return [], counter
+
+    occurrences.sort(
         key=lambda item: (
             round(item[0], 9),
             round(item[1], 9),
@@ -288,8 +329,26 @@ def _collect_poles_on_part(
             int(item[2][1]),
         )
     )
-    return hits, counter
 
+    # De-duplicate only the same pole at essentially the same route position.
+    # Do NOT globally unique pole IDs: the same pole is allowed to appear
+    # again later in the cable route.
+    cleaned = []
+    for item in occurrences:
+        if cleaned:
+            previous = cleaned[-1]
+            if (
+                item[2] == previous[2]
+                and abs(item[0] - previous[0]) <= measure_epsilon
+            ):
+                # Keep the closer observation if both adjacent segments
+                # reported the same physical occurrence.
+                if item[1] < previous[1]:
+                    cleaned[-1] = item
+                continue
+        cleaned.append(item)
+
+    return cleaned, counter
 
 def _extract_endpoints(geom):
     parts = _line_parts(geom)
@@ -439,9 +498,10 @@ class AutoPoleEdgeDialog(QtWidgets.QDialog):
         layout.addLayout(distance_row)
 
         tip = QtWidgets.QLabel(
-            "算法：将所选 DC / FEEDER 按轨迹归杆，按光缆前进方向自动排列经过的杆子，"
-            "相邻杆子自动生成一条 POLE EDGE。\\n"
+            "算法：沿所选 DC / FEEDER 的真实几何逐段归杆，按光缆行进方向保留经过杆的顺序，"
+            "同一根杆后续再次经过时保留该次经过；仅对最终杆间 Edge 做全局去重。\\n"
             "原有光缆图层不会修改；输出图层中的已有相同杆间边不会重复生成。"
+            " 例如 1→2→1→3→4 最终为 1-2、1-3、3-4，不生成 2-3。"
         )
         tip.setWordWrap(True)
         tip.setStyleSheet("color:#666; padding:4px 0;")
@@ -584,6 +644,21 @@ class AutoPoleEdgeDialog(QtWidgets.QDialog):
             )
             return
 
+        if output_id in cable_ids:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "光缆全自动连线",
+                "输出 POLE EDGE 图层不能同时作为输入光缆图层。",
+            )
+            return
+        if output_id in pole_ids:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "光缆全自动连线",
+                "输出 POLE EDGE 图层不能同时作为杆路点图层。",
+            )
+            return
+
         output_layer = QgsProject.instance().mapLayer(output_id)
         if output_layer is None or output_layer.type() != QgsMapLayerType.VectorLayer:
             QtWidgets.QMessageBox.critical(
@@ -649,7 +724,7 @@ class AutoPoleEdgeDialog(QtWidgets.QDialog):
                     result["cable_layer_count"],
                     result["cable_features"],
                     result["usable_cables"],
-                    result["pole_hits"],
+                    result["pole_occurrences"],
                     result["added"],
                     result["duplicates"],
                     result["no_edge_cables"],
@@ -688,7 +763,7 @@ class AutoPoleEdgeDialog(QtWidgets.QDialog):
             tolerance_m,
         )
 
-        self.status_label.setText("正在建立杆点索引……")
+        self.status_label.setText("正在建立杆点索引（支持同一杆重复经过）……")
         self.progress.setValue(1)
         poles, pole_index, index_map, cancelled = _build_pole_records(
             pole_ids,
@@ -749,7 +824,7 @@ class AutoPoleEdgeDialog(QtWidgets.QDialog):
             "cable_layer_count": len(cables),
             "cable_features": 0,
             "usable_cables": 0,
-            "pole_hits": 0,
+            "pole_occurrences": 0,
             "added": 0,
             "duplicates": 0,
             "no_edge_cables": 0,
@@ -816,43 +891,33 @@ class AutoPoleEdgeDialog(QtWidgets.QDialog):
                         counters["failed_cables"] += 1
                         continue
 
-                    cable_hits = []
-                    cable_seen = set()
+                    part_occurrences = defaultdict(list)
 
                     for part_index, part in enumerate(parts, start=1):
                         if self._cancel_requested:
                             self._rollback_written(output_layer)
                             return {"cancelled": True}
 
-                        part_geom = QgsGeometry.fromPolylineXY(part)
-                        hits, candidate_counter = _collect_poles_on_part(
-                            part_geom,
-                            pole_index,
-                            index_map,
-                            tolerance_units,
-                            cable_seen,
-                            lambda: self._cancel_requested,
-                            candidate_counter,
+                        hits, candidate_counter = (
+                            _collect_pole_occurrences_on_part(
+                                part,
+                                pole_index,
+                                index_map,
+                                tolerance_units,
+                                lambda: self._cancel_requested,
+                                candidate_counter,
+                            )
                         )
+                        part_occurrences[part_index].extend(hits)
 
-                        cable_hits.extend(
-                            (measure, distance, key, record, part_index)
-                            for measure, distance, key, record in hits
-                        )
-
-                    if not cable_hits:
-                        counters["no_edge_cables"] += 1
-                        continue
-
-                    # Sort by part first and then by position. For multipart
-                    # cables, each part is treated as an independent route.
-                    grouped = defaultdict(list)
-                    for item in cable_hits:
-                        grouped[item[4]].append(item[:4])
-
+                    cable_has_route = False
                     cable_added_any = False
-                    for part_index in sorted(grouped):
-                        ordered = grouped[part_index]
+
+                    for part_index in sorted(part_occurrences):
+                        ordered = list(part_occurrences[part_index])
+                        if len(ordered) < 2:
+                            continue
+
                         ordered.sort(
                             key=lambda item: (
                                 round(item[0], 9),
@@ -862,31 +927,22 @@ class AutoPoleEdgeDialog(QtWidgets.QDialog):
                             )
                         )
 
-                        # Collapse repeated hits to the same pole within a
-                        # cable part. A pole can appear again later if the
-                        # cable loops back; edge de-duplication handles the
-                        # resulting undirected duplicate.
-                        ordered_records = []
-                        seen_part_poles = set()
-                        for item in ordered:
-                            key = item[2]
-                            if key in seen_part_poles:
-                                continue
-                            seen_part_poles.add(key)
-                            ordered_records.append(item[3])
+                        # Keep repeated poles when they occur at different
+                        # positions on the cable.  Only the collector's
+                        # same-measure de-duplication is applied.
+                        cable_has_route = True
+                        counters["pole_occurrences"] += len(ordered)
 
-                        counters["pole_hits"] += len(ordered_records)
-                        if len(ordered_records) < 2:
-                            continue
-
-                        counters["usable_cables"] += 1
-                        for a, b in zip(
-                            ordered_records,
-                            ordered_records[1:],
+                        for a_item, b_item in zip(
+                            ordered,
+                            ordered[1:],
                         ):
+                            a = a_item[3]
+                            b = b_item[3]
                             edge = _edge_key(a["key"], b["key"])
                             if edge is None:
                                 continue
+
                             if edge in created_edges:
                                 counters["duplicates"] += 1
                                 continue
@@ -930,6 +986,11 @@ class AutoPoleEdgeDialog(QtWidgets.QDialog):
                                 if self._cancel_requested:
                                     self._rollback_written(output_layer)
                                     return {"cancelled": True}
+
+                    if cable_has_route:
+                        counters["usable_cables"] += 1
+                    else:
+                        counters["no_edge_cables"] += 1
 
                     if not cable_added_any and len(cable_seen) >= 2:
                         # All possible edges already existed or were collapsed.
