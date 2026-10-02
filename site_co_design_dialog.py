@@ -524,10 +524,20 @@ class CableSplitDialog(QtWidgets.QDialog):
         except Exception:
             save_cfg['point_layers'] = selected_fats
         proj.writeEntry('site_co_design', 'cableSplit', save_cfg)
+
+        self.okBtn.setEnabled(False)
+        self.cancelBtn.setEnabled(False)
         try:
             cable_split_run(params, iface=self.iface)
         except Exception as e:
-            QtWidgets.QMessageBox.critical(self, 'Site Co-Design', f'Cable Split 运行出错: {str(e)}')
+            QtWidgets.QMessageBox.critical(
+                self,
+                'Site Co-Design',
+                f'Cable Split 运行出错: {str(e)}'
+            )
+        finally:
+            self.okBtn.setEnabled(True)
+            self.cancelBtn.setEnabled(True)
         self.accept()
 
 
