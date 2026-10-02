@@ -32,6 +32,14 @@ from qgis.PyQt.QtCore import QVariant
 TEMP_PREFIX = "DC_归杆_临时_"
 
 
+def _pump_ui(counter, every=200):
+    if counter and counter % every == 0:
+        try:
+            QtWidgets.QApplication.processEvents()
+        except Exception:
+            pass
+
+
 def _point_from_feature(feature):
     geom = feature.geometry()
     if geom is None or geom.isEmpty():
@@ -216,6 +224,7 @@ def _snap_geometry(geom, pole_records, pole_index, tolerance_units):
                 part_collapsed = True
                 continue
             output.append(target)
+            _pump_ui(snapped_vertices + unsnapped_vertices, 2000)
 
         if part_collapsed:
             collapsed_parts += 1
@@ -277,7 +286,8 @@ def _snap_distribution_cable(
     unsnapped_vertices = 0
     collapsed_features = 0
 
-    for source_feature in source_layer.getFeatures():
+    for source_index, source_feature in enumerate(source_layer.getFeatures(), start=1):
+        _pump_ui(source_index, 100)
         source_geom = source_feature.geometry()
         if source_geom is None or source_geom.isEmpty():
             continue
@@ -410,7 +420,8 @@ def _analyse_dc(
     passing = {}
     turning = {}
 
-    for feature in temp_dc.getFeatures():
+    for feature_index, feature in enumerate(temp_dc.getFeatures(), start=1):
+        _pump_ui(feature_index, 50)
         source_geom = feature.geometry()
         if source_geom is None or source_geom.isEmpty():
             continue
@@ -509,7 +520,8 @@ def _ensure_and_write_fields(
                     % layer.name()
                 )
 
-            for feature in layer.getFeatures():
+            for feature_index, feature in enumerate(layer.getFeatures(), start=1):
+                _pump_ui(feature_index, 250)
                 key = (layer_id, int(feature.id()))
                 dc_no = len(passing.get(key, set()))
                 dc_turn = len(turning.get(key, set()))
