@@ -14,11 +14,12 @@ def classFactory(iface):
     from .pole_trace_connect import PoleTraceDialog
     from .overlength_pole import OverlengthPoleDialog
     from .feeder_pole_devices import FeederSnapDialog, FeederDeviceDialog
+    from .distribution_cable_pole_stats import DistributionCablePoleDialog
 
     import os
 
     class ODNToolsPro(SiteCoDesign):
-        """Main QGIS plugin controller exposing only the six supported tools."""
+        """Main QGIS plugin controller exposing the current supported tools."""
 
         def initGui(self):
             super().initGui()
@@ -49,6 +50,12 @@ def classFactory(iface):
                 self.feeder_devices,
                 parent=main_window,
             )
+            self.add_action(
+                icon_path,
+                self.tr('Distribution Cable归杆与统计'),
+                self.distribution_cable_stats,
+                parent=main_window,
+            )
 
         def pole_trace_connect(self):
             PoleTraceDialog(self.iface, self.iface.mainWindow()).exec_()
@@ -61,5 +68,11 @@ def classFactory(iface):
 
         def feeder_devices(self):
             FeederDeviceDialog(self.iface, self.iface.mainWindow()).exec_()
+
+        def distribution_cable_stats(self):
+            DistributionCablePoleDialog(
+                self.iface,
+                self.iface.mainWindow(),
+            ).exec_()
 
     return ODNToolsPro(iface)
