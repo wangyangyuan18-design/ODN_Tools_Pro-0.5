@@ -512,8 +512,8 @@ def _write_points_without_existing_check(layer, points_analysis_crs, points):
     added = 0
     try:
         for point_index, point in enumerate(points, start=1):
-        _pump_ui(point_index, 50)
-        target_point = _transform_point(point, transform)
+            _pump_ui(point_index, 50)
+            target_point = _transform_point(point, transform)
             feature = QgsFeature(layer.fields())
             feature.setGeometry(QgsGeometry.fromPointXY(target_point))
             if not layer.addFeature(feature):
