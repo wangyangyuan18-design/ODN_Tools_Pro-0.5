@@ -423,7 +423,17 @@ def _analyse_feeder(feeder_layer, pole_records, pole_index, tolerance_units, cor
                 continue
 
             local = []
-            for record in pole_records:
+            query_rect = line.boundingBox()
+            query_rect.setXMinimum(query_rect.xMinimum() - tolerance_units)
+            query_rect.setXMaximum(query_rect.xMaximum() + tolerance_units)
+            query_rect.setYMinimum(query_rect.yMinimum() - tolerance_units)
+            query_rect.setYMaximum(query_rect.yMaximum() + tolerance_units)
+
+            candidate_ids = pole_index.intersects(query_rect)
+            for idx in candidate_ids:
+                if idx < 0 or idx >= len(pole_records):
+                    continue
+                record = pole_records[idx]
                 location = _safe_line_locate(line, record["point"])
                 if location is None:
                     continue
