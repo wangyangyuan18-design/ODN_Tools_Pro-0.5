@@ -440,8 +440,7 @@ class AutoPoleEdgeDialog(QtWidgets.QDialog):
 
         tip = QtWidgets.QLabel(
             "算法：将所选 DC / FEEDER 按轨迹归杆，按光缆前进方向自动排列经过的杆子，"
-            "相邻杆子自动生成一条 POLE EDGE。
-"
+            "相邻杆子自动生成一条 POLE EDGE。\\n"
             "原有光缆图层不会修改；输出图层中的已有相同杆间边不会重复生成。"
         )
         tip.setWordWrap(True)
