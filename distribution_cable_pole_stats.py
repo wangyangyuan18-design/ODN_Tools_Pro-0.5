@@ -476,8 +476,6 @@ def _analyse_dc_passage(temp_dc, pole_records, pole_index, pass_tolerance, turn_
                     continue
                 record = pole_records[idx]
                 key = record["key"]
-                if key in seen_poles:
-                    continue
 
                 distance = line.distance(QgsGeometry.fromPointXY(record["point"]))
                 if distance > pass_tolerance:
@@ -487,8 +485,12 @@ def _analyse_dc_passage(temp_dc, pole_records, pole_index, pass_tolerance, turn_
                 if location is None:
                     continue
 
-                seen_poles.add(key)
-                passing.setdefault(key, set()).add(dc_fid)
+                # Passage is counted once per DC feature and pole, but every
+                # occurrence is still checked for a turn.  This matters when
+                # a multipart/looped DC passes the same pole more than once.
+                if key not in seen_poles:
+                    seen_poles.add(key)
+                    passing.setdefault(key, set()).add(dc_fid)
 
                 angle = _angle_at_line_position(line, location)
                 if angle <= turn_angle:
