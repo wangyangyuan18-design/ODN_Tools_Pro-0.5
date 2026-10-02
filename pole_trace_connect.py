@@ -320,7 +320,8 @@ class PoleTraceMapTool(QgsMapTool):
 
     def _pan_map(self,pos):
         if self._pan_start is None:return
-        p0=self.toMapCoordinates(self._pan_start); p1=self.toMapCoordinates(pos); self.canvas.setCenter(self.canvas.center()+(p0-p1)); self._pan_start=QPoint(pos); self.canvas.refresh()
+        p0=self.toMapCoordinates(self._pan_start); p1=self.toMapCoordinates(pos)
+        self.canvas.setCenter(self.canvas.center()+(p0-p1)); self._pan_start=QPoint(pos)
 
     def _confirm_save(self):
         box=QtWidgets.QMessageBox(self.canvas); box.setWindowTitle("杆路轨迹自动连线"); box.setText("是否保存当前已生成的全部杆间连线？")
