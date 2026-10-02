@@ -633,7 +633,8 @@ class DistributionCablePoleDialog(QtWidgets.QDialog, _PoleSelectorMixin):
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         )
-        buttons.button(QtWidgets.QDialogButtonBox.Ok).setText("运行")
+        self.run_btn = buttons.button(QtWidgets.QDialogButtonBox.Ok)
+        self.run_btn.setText("运行")
         buttons.accepted.connect(self._run)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -692,6 +693,7 @@ class DistributionCablePoleDialog(QtWidgets.QDialog, _PoleSelectorMixin):
             )
             return
 
+        self.run_btn.setEnabled(False)
         try:
             result = run_distribution_cable_stats(
                 pole_ids,
@@ -722,6 +724,7 @@ class DistributionCablePoleDialog(QtWidgets.QDialog, _PoleSelectorMixin):
                 "DC处理失败",
                 str(exc),
             )
+            self.run_btn.setEnabled(True)
 
 
 def run_distribution_cable_stats(
