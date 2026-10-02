@@ -1,18 +1,33 @@
 # -*- coding: utf-8 -*-
 """FEEDER pole snapping and TYPE J / UPB placement tools.
 
-The source FEEDER layer is never edited. The first tool creates an in-memory
-snapped copy. The second tool analyses that temporary copy and places devices
-on the selected pole/device layers.
+The source FEEDER layer is never edited. One Run performs both:
+1) create a snapped temporary FEEDER layer;
+2) analyse its pole sequence;
+3) write TYPE J / UPB points;
+4) update Pole.FEEDER.
+
+Distance inputs are always real metres. Projected CRSs with non-metre units
+are converted by their unit factor; geographic CRSs are analysed in a local
+UTM CRS and results are transformed back to the source CRS.
 """
 import math
 from collections import defaultdict
 
 from qgis.PyQt import QtWidgets, QtCore
 from qgis.core import (
-    QgsFeature, QgsGeometry, QgsMapLayerType, QgsPointXY, QgsProject,
-    QgsSpatialIndex, QgsWkbTypes, QgsCoordinateTransform, QgsRectangle, QgsField,
+    QgsCoordinateReferenceSystem,
+    QgsCoordinateTransform,
+    QgsFeature,
+    QgsField,
+    QgsGeometry,
+    QgsMapLayerType,
+    QgsPointXY,
+    QgsProject,
+    QgsSpatialIndex,
+    QgsUnitTypes,
     QgsVectorLayer,
+    QgsWkbTypes,
 )
 from qgis.PyQt.QtCore import QVariant
 
@@ -21,114 +36,583 @@ TEMP_PREFIX = "FEEDER_归杆_临时_"
 
 
 def _point_from_feature(feat):
-    g = feat.geometry()
-    if g is None or g.isEmpty():
+    geom = feat.geometry()
+    if geom is None or geom.isEmpty():
         return None
     try:
-        if QgsWkbTypes.geometryType(g.wkbType()) == QgsWkbTypes.PointGeometry:
-            return QgsPointXY(g.asPoint())
-        return QgsPointXY(g.centroid().asPoint())
+        if QgsWkbTypes.geometryType(geom.wkbType()) == QgsWkbTypes.PointGeometry:
+            return QgsPointXY(geom.asPoint())
+        return QgsPointXY(geom.centroid().asPoint())
     except Exception:
         return None
 
 
-def _line_parts(g):
-    if g is None or g.isEmpty():
+def _line_parts(geom):
+    if geom is None or geom.isEmpty():
         return []
     try:
-        if g.isMultipart():
-            return [list(p) for p in g.asMultiPolyline() if len(p) >= 2]
-        p = list(g.asPolyline())
-        return [p] if len(p) >= 2 else []
+        if geom.isMultipart():
+            return [list(part) for part in geom.asMultiPolyline() if len(part) >= 2]
+        points = list(geom.asPolyline())
+        return [points] if len(points) >= 2 else []
     except Exception:
         return []
 
 
-def _same_crs_transform(src, dst):
-    if src == dst:
-        return None
-    return QgsCoordinateTransform(src, dst, QgsProject.instance())
+def _transform_point(point, transform):
+    if transform is None:
+        return QgsPointXY(point)
+    return QgsPointXY(transform.transform(point))
 
 
-def _transform_geometry(g, tr):
-    if tr is None:
-        return QgsGeometry(g)
-    x = QgsGeometry(g)
-    try:
-        x.transform(tr)
-        return x
-    except Exception:
-        return QgsGeometry(g)
+def _transform_geometry(geom, transform):
+    result = QgsGeometry(geom)
+    if transform is None:
+        return result
+    result.transform(transform)
+    return result
 
 
-def _nearest_pole(point, pole_records, tolerance):
-    best = None
-    best_d = float("inf")
-    for rec in pole_records:
-        d = point.distance(rec["point"])
-        if d <= tolerance and d < best_d:
-            best = rec
-            best_d = d
-    return best, best_d
+def _utm_crs_for_layer(layer):
+    """Choose a local UTM CRS from the layer extent."""
+    source_crs = layer.crs()
+    to_wgs84 = QgsCoordinateTransform(
+        source_crs,
+        QgsCoordinateReferenceSystem("EPSG:4326"),
+        QgsProject.instance(),
+    )
+    extent = layer.extent()
+    center = QgsPointXY((extent.xMinimum() + extent.xMaximum()) / 2.0,
+                        (extent.yMinimum() + extent.yMaximum()) / 2.0)
+    center_wgs84 = to_wgs84.transform(center)
+    lon = max(-180.0, min(180.0, center_wgs84.x()))
+    lat = max(-80.0, min(84.0, center_wgs84.y()))
+    zone = int(math.floor((lon + 180.0) / 6.0) + 1)
+    zone = max(1, min(60, zone))
+    epsg = 32600 + zone if lat >= 0 else 32700 + zone
+    return QgsCoordinateReferenceSystem("EPSG:%d" % epsg)
 
 
-def _line_endpoints(g):
-    parts = _line_parts(g)
-    if not parts:
-        return None, None
-    return QgsPointXY(parts[0][0]), QgsPointXY(parts[-1][-1])
+def _analysis_context(source_layer):
+    """Return (analysis_crs, source_to_analysis, analysis_to_source, tol_scale).
 
-
-def _snap_all_vertices_geometry(g, pole_records, tolerance):
-    """Snap every FEEDER vertex to its nearest pole and remove duplicate
-    consecutive vertices which collapse onto the same pole.
-
-    The original FEEDER geometry is never changed.  For multipart lines each
-    part is processed independently.  A vertex without a pole inside the
-    configured tolerance is retained and reported to the caller.
+    tol_scale is the number of source/analysis CRS units per metre when the
+    source CRS is projected. For geographic CRS the analysis CRS is metric
+    and tol_scale is 1.
     """
-    parts = _line_parts(g)
-    if not parts:
-        return None, 0, 0
+    crs = source_layer.crs()
 
-    out_parts = []
+    if crs.isGeographic():
+        analysis_crs = _utm_crs_for_layer(source_layer)
+        source_to_analysis = QgsCoordinateTransform(
+            crs, analysis_crs, QgsProject.instance()
+        )
+        analysis_to_source = QgsCoordinateTransform(
+            analysis_crs, crs, QgsProject.instance()
+        )
+        return analysis_crs, source_to_analysis, analysis_to_source, 1.0
+
+    try:
+        factor = QgsUnitTypes.fromUnitToUnitFactor(
+            crs.mapUnits(), QgsUnitTypes.DistanceMeters
+        )
+        if factor > 0:
+            # factor = metres represented by one source CRS unit.
+            return crs, None, None, 1.0 / factor
+    except Exception:
+        pass
+
+    # Fallback for unusual projected units.
+    analysis_crs = _utm_crs_for_layer(source_layer)
+    source_to_analysis = QgsCoordinateTransform(
+        crs, analysis_crs, QgsProject.instance()
+    )
+    analysis_to_source = QgsCoordinateTransform(
+        analysis_crs, crs, QgsProject.instance()
+    )
+    return analysis_crs, source_to_analysis, analysis_to_source, 1.0
+
+
+def _build_pole_records(pole_layer_ids, analysis_crs):
+    project = QgsProject.instance()
+    records = []
+
+    for layer_id in pole_layer_ids:
+        layer = project.mapLayer(layer_id)
+        if layer is None:
+            continue
+        transform = None
+        if layer.crs() != analysis_crs:
+            transform = QgsCoordinateTransform(
+                layer.crs(), analysis_crs, project
+            )
+        for feature in layer.getFeatures():
+            point = _point_from_feature(feature)
+            if point is None:
+                continue
+            try:
+                point = _transform_point(point, transform)
+            except Exception as exc:
+                raise RuntimeError(
+                    "杆路图层 %s 坐标转换失败：%s" % (layer.name(), exc)
+                )
+            records.append({
+                "layer_id": layer_id,
+                "fid": int(feature.id()),
+                "key": (layer_id, int(feature.id())),
+                "point": point,
+            })
+    if not records:
+        raise RuntimeError("选定杆路图层没有可用的杆点。")
+    return records
+
+
+def _build_point_index(records):
+    index = QgsSpatialIndex()
+    for idx, record in enumerate(records):
+        feature = QgsFeature()
+        feature.setId(idx)
+        feature.setGeometry(QgsGeometry.fromPointXY(record["point"]))
+        index.addFeature(feature)
+    return index
+
+
+def _nearest_pole(point, pole_records, spatial_index, tolerance_units):
+    candidates = spatial_index.nearestNeighbor(point, 8)
+    best = None
+    best_distance = float("inf")
+    for idx in candidates:
+        if idx < 0 or idx >= len(pole_records):
+            continue
+        record = pole_records[idx]
+        distance = point.distance(record["point"])
+        if distance <= tolerance_units and distance < best_distance:
+            best = record
+            best_distance = distance
+    return best, best_distance
+
+
+def _snap_geometry(geom, pole_records, spatial_index, tolerance_units):
+    parts = _line_parts(geom)
+    if not parts:
+        return None, 0, 0, 0
+
+    output_parts = []
     snapped_vertices = 0
     unsnapped_vertices = 0
+    collapsed_parts = 0
 
-    for pts in parts:
-        out = []
-        last_key = None
-        for pt in pts:
-            rec, _ = _nearest_pole(pt, pole_records, tolerance)
-            if rec is not None:
-                target = QgsPointXY(rec["point"])
-                key = (rec["layer_id"], rec["fid"])
+    for points in parts:
+        output = []
+        part_collapsed = False
+
+        for point in points:
+            record, _ = _nearest_pole(
+                point, pole_records, spatial_index, tolerance_units
+            )
+            if record is not None:
+                target = QgsPointXY(record["point"])
                 snapped_vertices += 1
             else:
-                target = QgsPointXY(pt)
-                key = None
+                target = QgsPointXY(point)
                 unsnapped_vertices += 1
 
-            # If two adjacent vertices resolve to the same pole, keep only
-            # one vertex. This is important for both geometry cleanliness and
-            # the "one pole = one passage point" rule.
-            if out and target.distance(out[-1]) <= 1e-9:
-                if key is not None:
-                    last_key = key
+            if output and target.distance(output[-1]) <= 1e-9:
+                part_collapsed = True
+                continue
+            output.append(target)
+
+        if part_collapsed:
+            collapsed_parts += 1
+        if len(output) >= 2:
+            output_parts.append(output)
+
+    if not output_parts:
+        return None, snapped_vertices, unsnapped_vertices, collapsed_parts
+
+    if geom.isMultipart():
+        result = QgsGeometry.fromMultiPolylineXY(output_parts)
+    else:
+        result = QgsGeometry.fromPolylineXY(output_parts[0])
+    return result, snapped_vertices, unsnapped_vertices, collapsed_parts
+
+
+def _make_temp_layer(source_layer):
+    project = QgsProject.instance()
+    name = TEMP_PREFIX + source_layer.name()
+
+    for old in list(project.mapLayersByName(name)):
+        project.removeMapLayer(old.id())
+
+    geometry_type = (
+        "MultiLineString"
+        if QgsWkbTypes.isMultiType(source_layer.wkbType())
+        else "LineString"
+    )
+
+    result = QgsVectorLayer(geometry_type, name, "memory")
+    result.setCrs(source_layer.crs())
+    provider = result.dataProvider()
+    provider.addAttributes(list(source_layer.fields()))
+    provider.addAttributes([
+        QgsField("SNAP_START", QVariant.String),
+        QgsField("SNAP_END", QVariant.String),
+        QgsField("SNAP_VERTS", QVariant.Int),
+        QgsField("UNSNAPPED", QVariant.Int),
+        QgsField("COLLAPSED", QVariant.Int),
+    ])
+    result.updateFields()
+    project.addMapLayer(result)
+    return result
+
+
+def _snap_feeder(
+    source_layer,
+    pole_records,
+    pole_index,
+    source_to_analysis,
+    analysis_to_source,
+    tolerance_units,
+):
+    output = _make_temp_layer(source_layer)
+    provider = output.dataProvider()
+
+    total = 0
+    snapped_features = 0
+    snapped_vertices = 0
+    unsnapped_vertices = 0
+    collapsed_features = 0
+
+    project = QgsProject.instance()
+
+    for source_feature in source_layer.getFeatures():
+        source_geom = source_feature.geometry()
+        if source_geom is None or source_geom.isEmpty():
+            continue
+        total += 1
+
+        analysis_geom = _transform_geometry(source_geom, source_to_analysis)
+        new_geom, snap_count, unsnap_count, collapsed_parts = _snap_geometry(
+            analysis_geom,
+            pole_records,
+            pole_index,
+            tolerance_units,
+        )
+        if new_geom is None:
+            continue
+
+        output_geom = _transform_geometry(new_geom, analysis_to_source)
+
+        new_parts = _line_parts(new_geom)
+        start_record = end_record = None
+        if new_parts:
+            start_record, _ = _nearest_pole(
+                new_parts[0][0], pole_records, pole_index, 1e-9
+            )
+            end_record, _ = _nearest_pole(
+                new_parts[-1][-1], pole_records, pole_index, 1e-9
+            )
+
+        feature = QgsFeature(output.fields())
+        attributes = list(source_feature.attributes())
+        attributes.extend([
+            "%s:%s" % (start_record["layer_id"], start_record["fid"])
+            if start_record else "",
+            "%s:%s" % (end_record["layer_id"], end_record["fid"])
+            if end_record else "",
+            snap_count,
+            unsnap_count,
+            collapsed_parts,
+        ])
+        feature.setAttributes(attributes)
+        feature.setGeometry(output_geom)
+
+        if not provider.addFeature(feature):
+            raise RuntimeError(
+                "无法写入临时FEEDER图层，FID=%s" % source_feature.id()
+            )
+
+        if snap_count:
+            snapped_features += 1
+        snapped_vertices += snap_count
+        unsnapped_vertices += unsnap_count
+        if collapsed_parts:
+            collapsed_features += 1
+
+    output.updateExtents()
+    return output, {
+        "total": total,
+        "feature_count": output.featureCount(),
+        "snapped_features": snapped_features,
+        "snapped_vertices": snapped_vertices,
+        "unsnapped_vertices": unsnapped_vertices,
+        "collapsed_features": collapsed_features,
+    }
+
+
+def _safe_line_locate(line, point):
+    try:
+        location = line.lineLocatePoint(QgsGeometry.fromPointXY(point))
+        return location if location >= 0 else None
+    except Exception:
+        return None
+
+
+def _point_at(line, distance):
+    try:
+        return QgsPointXY(line.interpolate(distance).asPoint())
+    except Exception:
+        return None
+
+
+def _local_direction(line, position, forward, step):
+    total = line.length()
+    if total <= 0:
+        return None
+
+    if forward:
+        start = max(0.0, position)
+        end = min(total, position + step)
+    else:
+        start = max(0.0, position - step)
+        end = min(total, position)
+
+    p1 = _point_at(line, start)
+    p2 = _point_at(line, end)
+    if p1 is None or p2 is None:
+        return None
+
+    dx = p2.x() - p1.x()
+    dy = p2.y() - p1.y()
+    if not forward:
+        dx, dy = -dx, -dy
+
+    length = math.hypot(dx, dy)
+    return (dx / length, dy / length) if length > 0 else None
+
+
+def _angle_at_line_position(line, position):
+    total = line.length()
+    if total <= 0:
+        return 180.0
+
+    step = max(min(total * 0.02, 5.0), 0.5)
+    back = _local_direction(line, position, False, step)
+    forward = _local_direction(line, position, True, step)
+    if back is None or forward is None:
+        return 180.0
+
+    dot = max(-1.0, min(1.0, back[0] * forward[0] + back[1] * forward[1]))
+    return math.degrees(math.acos(dot))
+
+
+def _analyse_feeder(feeder_layer, pole_records, pole_index, tolerance_units, corner_angle):
+    line_hits = []
+    pole_to_hits = defaultdict(list)
+    pole_feeder_ids = defaultdict(set)
+
+    for feeder_feature in feeder_layer.getFeatures():
+        geom = feeder_feature.geometry()
+        if geom is None or geom.isEmpty():
+            continue
+
+        parts = _line_parts(geom)
+        for part_index, points in enumerate(parts):
+            line = QgsGeometry.fromPolylineXY(points)
+            if line.isEmpty() or line.length() <= 0:
                 continue
 
-            out.append(target)
-            last_key = key
+            local = []
+            for record in pole_records:
+                location = _safe_line_locate(line, record["point"])
+                if location is None:
+                    continue
+                projected = _point_at(line, location)
+                if projected is None:
+                    continue
+                if projected.distance(record["point"]) > tolerance_units:
+                    continue
+                local.append((location, record, projected))
 
-        if len(out) >= 2:
-            out_parts.append(out)
+            local.sort(key=lambda item: item[0])
 
-    if not out_parts:
-        return None, snapped_vertices, unsnapped_vertices
+            unique = []
+            seen_keys = set()
+            for location, record, projected in local:
+                if record["key"] in seen_keys:
+                    continue
+                seen_keys.add(record["key"])
+                unique.append((location, record, projected))
 
-    if g.isMultipart():
-        return QgsGeometry.fromMultiPolylineXY(out_parts), snapped_vertices, unsnapped_vertices
-    return QgsGeometry.fromPolylineXY(out_parts[0]), snapped_vertices, unsnapped_vertices
+            if unique:
+                line_hits.append(
+                    (int(feeder_feature.id()), part_index, line, unique)
+                )
+                for location, record, projected in unique:
+                    key = record["key"]
+                    pole_to_hits[key].append((line, location, record))
+                    pole_feeder_ids[key].add(int(feeder_feature.id()))
+
+    pole_info = {}
+    for key, hits in pole_to_hits.items():
+        is_corner = False
+        min_angle = 180.0
+        for line, location, record in hits:
+            angle = _angle_at_line_position(line, location)
+            min_angle = min(min_angle, angle)
+            if angle <= corner_angle:
+                is_corner = True
+
+        pole_info[key] = {
+            "point": hits[0][2]["point"],
+            "corner": is_corner,
+            "angle": min_angle,
+            "hits": hits,
+        }
+
+    return line_hits, pole_info, pole_feeder_ids
+
+
+def _write_points_without_existing_check(layer, points_analysis_crs, points):
+    if not points:
+        return 0
+
+    transform = None
+    if layer.crs() != points_analysis_crs:
+        transform = QgsCoordinateTransform(
+            points_analysis_crs, layer.crs(), QgsProject.instance()
+        )
+
+    own_edit = not layer.isEditable()
+    if own_edit and not layer.startEditing():
+        raise RuntimeError("无法编辑图层：%s" % layer.name())
+
+    added = 0
+    try:
+        for point in points:
+            target_point = _transform_point(point, transform)
+            feature = QgsFeature(layer.fields())
+            feature.setGeometry(QgsGeometry.fromPointXY(target_point))
+            if not layer.addFeature(feature):
+                raise RuntimeError("无法向图层写入要素：%s" % layer.name())
+            added += 1
+
+        if own_edit and not layer.commitChanges():
+            layer.rollBack()
+            raise RuntimeError("提交图层失败：%s" % layer.name())
+        return added
+    except Exception:
+        if own_edit:
+            layer.rollBack()
+        raise
+
+
+def _write_feeder_field(pole_layer_ids, pole_info, pole_feeder_ids):
+    project = QgsProject.instance()
+    field_updates = 0
+
+    for layer_id in pole_layer_ids:
+        layer = project.mapLayer(layer_id)
+        if layer is None:
+            continue
+
+        field_idx = layer.fields().indexOf("FEEDER")
+        own_edit = not layer.isEditable()
+        try:
+            if own_edit and not layer.startEditing():
+                raise RuntimeError("无法编辑杆路图层：%s" % layer.name())
+
+            if field_idx < 0:
+                if not layer.addAttribute(
+                    QgsField("FEEDER", QVariant.Int)
+                ):
+                    raise RuntimeError(
+                        "无法新增FEEDER字段：%s" % layer.name()
+                    )
+                layer.updateFields()
+                field_idx = layer.fields().indexOf("FEEDER")
+
+            if field_idx < 0:
+                raise RuntimeError(
+                    "杆路图层 %s 中无法找到FEEDER字段。" % layer.name()
+                )
+
+            for feature in layer.getFeatures():
+                key = (layer_id, int(feature.id()))
+                value = len(pole_feeder_ids.get(key, set()))
+                if feature[field_idx] != value:
+                    if not layer.changeAttributeValue(
+                        feature.id(), field_idx, value
+                    ):
+                        raise RuntimeError(
+                            "无法写入%s的FEEDER字段，FID=%s"
+                            % (layer.name(), feature.id())
+                        )
+                    field_updates += 1
+
+            if own_edit and not layer.commitChanges():
+                raise RuntimeError("提交杆路图层失败：%s" % layer.name())
+        except Exception:
+            if own_edit:
+                layer.rollBack()
+            raise
+
+    return field_updates
+
+
+def _build_device_keys(line_hits, pole_info):
+    """Return TYPE J and UPB keys using the required sequential rule."""
+    typej_keys = set()
+    upb_keys = set()
+    processed_keys = set()
+
+    for _, _, line, hits in line_hits:
+        ordered = []
+        seen = set()
+        for location, record, _ in hits:
+            key = record["key"]
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append((location, record))
+
+        segment = []
+        for location, record in ordered:
+            key = record["key"]
+            if key in processed_keys:
+                continue
+
+            info = pole_info[key]
+            if info["corner"]:
+                for idx, (_, segment_record) in enumerate(segment):
+                    segment_key = segment_record["key"]
+                    if segment_key in processed_keys:
+                        continue
+                    if idx % 2 == 0:
+                        typej_keys.add(segment_key)
+                    else:
+                        upb_keys.add(segment_key)
+                    processed_keys.add(segment_key)
+
+                segment = []
+                upb_keys.add(key)
+                processed_keys.add(key)
+            else:
+                segment.append((location, record))
+
+        for idx, (_, record) in enumerate(segment):
+            key = record["key"]
+            if key in processed_keys:
+                continue
+            if idx % 2 == 0:
+                typej_keys.add(key)
+            else:
+                upb_keys.add(key)
+            processed_keys.add(key)
+
+    # Any passed pole not selected as TYPE J must have UPB.
+    upb_keys.update(set(pole_info.keys()) - typej_keys - upb_keys)
+    return typej_keys, upb_keys
 
 
 class _PoleSelectorMixin:
@@ -139,6 +623,7 @@ class _PoleSelectorMixin:
                 continue
             if QgsWkbTypes.geometryType(layer.wkbType()) != QgsWkbTypes.PointGeometry:
                 continue
+
             item = QtWidgets.QListWidgetItem(layer.name())
             item.setData(QtCore.Qt.UserRole, layer.id())
             item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
@@ -146,268 +631,94 @@ class _PoleSelectorMixin:
             widget.addItem(item)
 
 
-class FeederSnapDialog(QtWidgets.QDialog, _PoleSelectorMixin):
+class FeederDeviceDialog(QtWidgets.QDialog, _PoleSelectorMixin):
+    """Merged FEEDER snapping + TYPE J / UPB placement dialog."""
+
     def __init__(self, iface, parent=None):
         super().__init__(parent or iface.mainWindow())
         self.iface = iface
-        self.setWindowTitle("FEEDER归杆")
-        self.resize(520, 430)
+        self.setWindowTitle("FEEDER归杆及杆上设备布置")
+        self.resize(610, 520)
 
-        lay = QtWidgets.QVBoxLayout(self)
-        lay.addWidget(QtWidgets.QLabel("杆路图层（可多选）"))
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.addWidget(QtWidgets.QLabel("杆路图层（可多选）"))
+
         self.poles = QtWidgets.QListWidget()
         self.poles.setMinimumHeight(180)
-        lay.addWidget(self.poles)
+        layout.addWidget(self.poles)
 
         row = QtWidgets.QHBoxLayout()
         row.addWidget(QtWidgets.QLabel("FEEDER图层"))
         self.feeder = QtWidgets.QComboBox()
         row.addWidget(self.feeder, 1)
-        lay.addLayout(row)
-
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(QtWidgets.QLabel("端点归杆距离（m）"))
-        self.tol = QtWidgets.QDoubleSpinBox()
-        self.tol.setRange(0.01, 1000.0)
-        self.tol.setDecimals(2)
-        self.tol.setValue(5.0)
-        row.addWidget(self.tol)
-        row.addStretch()
-        lay.addLayout(row)
-
-        note = QtWidgets.QLabel(
-            "只复制FEEDER到临时内存图层，不修改原FEEDER。\n"
-            "首、尾及中间所有顶点均按设定距离归到最近杆；相邻顶点归到同一根杆时自动合并，不产生多余顶点。"
-        )
-        note.setWordWrap(True)
-        note.setStyleSheet("color:#666;")
-        lay.addWidget(note)
-
-        btn = QtWidgets.QDialogButtonBox(
-            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
-        )
-        btn.accepted.connect(self._run)
-        btn.rejected.connect(self.reject)
-        lay.addWidget(btn)
-
-        self._populate_poles(self.poles)
-        self._populate_feeders()
-
-    def _populate_feeders(self):
-        self.feeder.clear()
-        for layer in QgsProject.instance().mapLayers().values():
-            if layer.type() != QgsMapLayerType.VectorLayer:
-                continue
-            if QgsWkbTypes.geometryType(layer.wkbType()) == QgsWkbTypes.LineGeometry:
-                self.feeder.addItem(layer.name(), layer.id())
-
-    def _selected_poles(self):
-        return [
-            self.poles.item(i).data(QtCore.Qt.UserRole)
-            for i in range(self.poles.count())
-            if self.poles.item(i).checkState() == QtCore.Qt.Checked
-        ]
-
-    def _run(self):
-        ids = self._selected_poles()
-        feeder = QgsProject.instance().mapLayer(self.feeder.currentData())
-        if not ids:
-            QtWidgets.QMessageBox.warning(self, "FEEDER归杆", "请至少选择一个杆路图层。")
-            return
-        if feeder is None:
-            QtWidgets.QMessageBox.warning(self, "FEEDER归杆", "请选择FEEDER图层。")
-            return
-        try:
-            result = run_feeder_snap(ids, feeder, self.tol.value(), self.iface)
-            if result:
-                self.accept()
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "FEEDER归杆失败", str(exc))
-
-
-def run_feeder_snap(pole_layer_ids, feeder_layer, tolerance, iface=None):
-    project = QgsProject.instance()
-    poles_by_crs = defaultdict(list)
-
-    # Use FEEDER CRS as the analysis CRS so the configured distance is applied
-    # consistently to the source FEEDER and all selected pole layers.
-    for lid in pole_layer_ids:
-        layer = project.mapLayer(lid)
-        if layer is None:
-            continue
-        tr = _same_crs_transform(layer.crs(), feeder_layer.crs())
-        for f in layer.getFeatures():
-            p = _point_from_feature(f)
-            if p is None:
-                continue
-            if tr is not None:
-                p = QgsPointXY(tr.transform(p))
-            poles_by_crs[feeder_layer.crs().authid()].append({
-                "layer_id": lid, "fid": int(f.id()), "point": p,
-            })
-
-    pole_records = poles_by_crs[feeder_layer.crs().authid()]
-    if not pole_records:
-        raise RuntimeError("选定杆路图层没有可用的点要素。")
-
-    name = TEMP_PREFIX + feeder_layer.name()
-    for old in list(project.mapLayersByName(name)):
-        project.removeMapLayer(old.id())
-
-    out = QgsVectorLayer(
-        "LineString" if not QgsWkbTypes.isMultiType(feeder_layer.wkbType())
-        else "MultiLineString",
-        name,
-        "memory",
-    )
-    out.setCrs(feeder_layer.crs())
-    pr = out.dataProvider()
-    pr.addAttributes(list(feeder_layer.fields()))
-    pr.addAttributes([
-        QgsField("SNAP_START", QVariant.String),
-        QgsField("SNAP_END", QVariant.String),
-        QgsField("SNAP_VERTS", QVariant.Int),
-        QgsField("UNSNAPPED", QVariant.Int),
-    ])
-    out.updateFields()
-
-    total = snapped = collapsed = unsnapped_vertices = 0
-    for src in feeder_layer.getFeatures():
-        g = src.geometry()
-        if g is None or g.isEmpty():
-            continue
-        total += 1
-
-        ng, snap_count, unsnap_count = _snap_all_vertices_geometry(
-            g, pole_records, tolerance
-        )
-        if ng is None:
-            continue
-        unsnapped_vertices += unsnap_count
-
-        # Record the actual first/last pole after all-vertex snapping.
-        new_parts = _line_parts(ng)
-        start_rec = end_rec = None
-        if new_parts:
-            sa, sb = new_parts[0][0], new_parts[-1][-1]
-            start_rec, _ = _nearest_pole(sa, pole_records, 1e-9)
-            end_rec, _ = _nearest_pole(sb, pole_records, 1e-9)
-
-        nf = QgsFeature(out.fields())
-        attrs = list(src.attributes())
-        attrs.extend([
-            f"{start_rec['layer_id']}:{start_rec['fid']}" if start_rec else "",
-            f"{end_rec['layer_id']}:{end_rec['fid']}" if end_rec else "",
-            snap_count,
-            unsnap_count,
-        ])
-        nf.setAttributes(attrs)
-        nf.setGeometry(ng)
-        pr.addFeature(nf)
-
-        if snap_count:
-            snapped += 1
-        # Count collapsed geometry where multiple source vertices were reduced
-        # to fewer output vertices.
-        src_vertex_count = sum(len(p) for p in _line_parts(g))
-        out_vertex_count = sum(len(p) for p in _line_parts(ng))
-        if out_vertex_count < src_vertex_count:
-            collapsed += 1
-
-    out.updateExtents()
-    project.addMapLayer(out)
-
-    msg = (
-        f"FEEDER归杆完成：原线 {total} 条，生成临时线 {out.featureCount()} 条；"
-        f"发生顶点归杆 {snapped} 条；合并多余顶点 {collapsed} 条；"
-        f"未找到 {unsnapped_vertices} 个顶点在设定距离内的杆位。"
-    )
-    if iface:
-        iface.messageBar().pushSuccess("ODN Tools Pro", msg, duration=8)
-    return out
-
-
-
-class FeederDeviceDialog(QtWidgets.QDialog, _PoleSelectorMixin):
-    def __init__(self, iface, parent=None):
-        super().__init__(parent or iface.mainWindow())
-        self.iface = iface
-        self.setWindowTitle("FEEDER杆上设备布置")
-        self.resize(560, 470)
-
-        lay = QtWidgets.QVBoxLayout(self)
-        lay.addWidget(QtWidgets.QLabel("杆路图层（可多选）"))
-        self.poles = QtWidgets.QListWidget()
-        self.poles.setMinimumHeight(150)
-        lay.addWidget(self.poles)
-
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(QtWidgets.QLabel("归杆后的FEEDER临时图层"))
-        self.feeder = QtWidgets.QComboBox()
-        row.addWidget(self.feeder, 1)
-        lay.addLayout(row)
+        layout.addLayout(row)
 
         row = QtWidgets.QHBoxLayout()
         row.addWidget(QtWidgets.QLabel("TYPE J图层"))
         self.typej = QtWidgets.QComboBox()
         row.addWidget(self.typej, 1)
-        lay.addWidget(row)
+        layout.addLayout(row)
 
         row = QtWidgets.QHBoxLayout()
         row.addWidget(QtWidgets.QLabel("UPB图层"))
         self.upb = QtWidgets.QComboBox()
         row.addWidget(self.upb, 1)
-        lay.addLayout(row)
+        layout.addLayout(row)
+
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(QtWidgets.QLabel("归杆距离（m）"))
+        self.tolerance = QtWidgets.QDoubleSpinBox()
+        self.tolerance.setRange(0.01, 1000.0)
+        self.tolerance.setDecimals(2)
+        self.tolerance.setValue(5.0)
+        row.addWidget(self.tolerance)
+        row.addStretch()
+        layout.addLayout(row)
 
         row = QtWidgets.QHBoxLayout()
         row.addWidget(QtWidgets.QLabel("拐角判定角度（≤此角度为拐角）"))
-        self.angle = QtWidgets.QDoubleSpinBox()
-        self.angle.setRange(1.0, 179.9)
-        self.angle.setDecimals(1)
-        self.angle.setValue(135.0)
-        row.addWidget(self.angle)
+        self.corner_angle = QtWidgets.QDoubleSpinBox()
+        self.corner_angle.setRange(1.0, 179.9)
+        self.corner_angle.setDecimals(1)
+        self.corner_angle.setValue(135.0)
+        row.addWidget(self.corner_angle)
         row.addStretch()
-        lay.addLayout(row)
-
-        row = QtWidgets.QHBoxLayout()
-        row.addWidget(QtWidgets.QLabel("杆/FEEDER经过判定距离（m）"))
-        self.pass_tol = QtWidgets.QDoubleSpinBox()
-        self.pass_tol.setRange(0.01, 1000.0)
-        self.pass_tol.setDecimals(2)
-        self.pass_tol.setValue(5.0)
-        row.addWidget(self.pass_tol)
-        row.addStretch()
-        lay.addLayout(row)
+        layout.addLayout(row)
 
         note = QtWidgets.QLabel(
-            "直线杆：符合“每隔一根杆”规则时放TYPE J；没有TYPE J的经过杆放UPB。\n"
-            "拐角杆（局部角度≤设定值）不放TYPE J，直接按UPB规则处理。\n"
-            "设备均落在杆的实际坐标，不修改FEEDER。"
+            "一次运行完成：FEEDER归杆 → TYPE J/UPB布置 → Pole.FEEDER更新。\n"
+            "归杆距离始终按真实米数计算；135°为真实角度阈值。\n"
+            "原FEEDER不修改；TYPE J/UPB写入时不检查目标图层原有数据。"
         )
         note.setWordWrap(True)
         note.setStyleSheet("color:#666;")
-        lay.addWidget(note)
+        layout.addWidget(note)
 
-        btn = QtWidgets.QDialogButtonBox(
+        buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         )
-        btn.accepted.connect(self._run)
-        btn.rejected.connect(self.reject)
-        lay.addWidget(btn)
+        buttons.button(QtWidgets.QDialogButtonBox.Ok).setText("运行")
+        buttons.accepted.connect(self._run)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
 
         self._populate_poles(self.poles)
         self._populate_layers()
 
     def _populate_layers(self):
-        self.feeder.clear(); self.typej.clear(); self.upb.clear()
+        self.feeder.clear()
+        self.typej.clear()
+        self.upb.clear()
+
         project = QgsProject.instance()
         for layer in project.mapLayers().values():
             if layer.type() != QgsMapLayerType.VectorLayer:
                 continue
-            gt = QgsWkbTypes.geometryType(layer.wkbType())
-            if gt == QgsWkbTypes.LineGeometry and layer.name().startswith(TEMP_PREFIX):
+
+            geometry_type = QgsWkbTypes.geometryType(layer.wkbType())
+            if geometry_type == QgsWkbTypes.LineGeometry:
                 self.feeder.addItem(layer.name(), layer.id())
-            elif gt == QgsWkbTypes.PointGeometry:
+            elif geometry_type == QgsWkbTypes.PointGeometry:
                 self.typej.addItem(layer.name(), layer.id())
                 self.upb.addItem(layer.name(), layer.id())
 
@@ -423,346 +734,170 @@ class FeederDeviceDialog(QtWidgets.QDialog, _PoleSelectorMixin):
         feeder = QgsProject.instance().mapLayer(self.feeder.currentData())
         typej = QgsProject.instance().mapLayer(self.typej.currentData())
         upb = QgsProject.instance().mapLayer(self.upb.currentData())
+
         if not pole_ids:
-            QtWidgets.QMessageBox.warning(self, "设备布置", "请至少选择一个杆路图层。")
+            QtWidgets.QMessageBox.warning(
+                self, "FEEDER处理", "请至少选择一个杆路图层。"
+            )
             return
         if feeder is None:
-            QtWidgets.QMessageBox.warning(self, "设备布置", "请先生成FEEDER归杆临时图层。")
+            QtWidgets.QMessageBox.warning(
+                self, "FEEDER处理", "请选择FEEDER图层。"
+            )
             return
         if typej is None or upb is None:
-            QtWidgets.QMessageBox.warning(self, "设备布置", "请选择TYPE J和UPB点图层。")
-            return
-        try:
-            run_feeder_devices(
-                pole_ids, feeder, typej, upb,
-                self.angle.value(), self.pass_tol.value(), self.iface
+            QtWidgets.QMessageBox.warning(
+                self, "FEEDER处理", "请选择TYPE J和UPB图层。"
             )
-            self.accept()
+            return
+        if typej.id() == upb.id():
+            QtWidgets.QMessageBox.warning(
+                self, "FEEDER处理", "TYPE J图层和UPB图层不能选择同一个图层。"
+            )
+            return
+
+        try:
+            result = run_feeder_devices(
+                pole_ids,
+                feeder,
+                typej,
+                upb,
+                self.tolerance.value(),
+                self.corner_angle.value(),
+                self.iface,
+            )
+            if result:
+                self.accept()
         except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, "设备布置失败", str(exc))
+            QtWidgets.QMessageBox.critical(
+                self, "FEEDER处理失败", str(exc)
+            )
 
 
-def _project_position_on_line(line, point):
-    try:
-        ok, dist, _, _ = line.closestSegmentWithContext(point)
-        if ok < 0:
-            return None
-        # closestSegmentWithContext returns the squared distance as first
-        # value in some QGIS versions; using line.lineLocatePoint is safer.
-        loc = line.lineLocatePoint(QgsGeometry.fromPointXY(point))
-        if loc < 0:
-            return None
-        return loc
-    except Exception:
-        return None
+def run_feeder_snap(pole_layer_ids, feeder_layer, tolerance, iface=None):
+    """Compatibility wrapper: only create the snapped temporary layer."""
+    analysis_crs, source_to_analysis, analysis_to_source, scale = _analysis_context(
+        feeder_layer
+    )
+    pole_records = _build_pole_records(pole_layer_ids, analysis_crs)
+    pole_index = _build_point_index(pole_records)
 
+    tolerance_units = (
+        tolerance if source_to_analysis is not None else tolerance * scale
+    )
+    output, info = _snap_feeder(
+        feeder_layer,
+        pole_records,
+        pole_index,
+        source_to_analysis,
+        analysis_to_source,
+        tolerance_units,
+    )
 
-def _point_at(line, distance):
-    try:
-        return QgsPointXY(line.interpolate(distance).asPoint())
-    except Exception:
-        return None
-
-
-def _local_direction(line, at_dist, forward, step):
-    total = line.length()
-    if total <= 0:
-        return None
-    if forward:
-        a = max(0.0, at_dist)
-        b = min(total, at_dist + step)
-    else:
-        a = max(0.0, at_dist - step)
-        b = min(total, at_dist)
-    pa, pb = _point_at(line, a), _point_at(line, b)
-    if pa is None or pb is None:
-        return None
-    dx, dy = pb.x() - pa.x(), pb.y() - pa.y()
-    if not forward:
-        dx, dy = -dx, -dy
-    n = math.hypot(dx, dy)
-    return (dx / n, dy / n) if n > 0 else None
-
-
-def _angle_at_line_position(line, dist):
-    total = line.length()
-    if total <= 0:
-        return 180.0
-    step = max(min(total * 0.02, 5.0), 0.5)
-    # Use directions pointing away from the pole on both sides.
-    back = _local_direction(line, dist, False, step)
-    forward = _local_direction(line, dist, True, step)
-    if back is None or forward is None:
-        return 180.0
-    dot = max(-1.0, min(1.0, back[0] * forward[0] + back[1] * forward[1]))
-    return math.degrees(math.acos(dot))
-
-
-def _filter_new_points(layer, points, tolerance=0.5):
-    existing = []
-    for f in layer.getFeatures():
-        p = _point_from_feature(f)
-        if p is not None:
-            existing.append(p)
-    out = []
-    for point in points:
-        if any(point.distance(p) <= tolerance for p in existing):
-            continue
-        if any(point.distance(p) <= tolerance for p in out):
-            continue
-        out.append(QgsPointXY(point))
-    return out
-
-
-def _write_devices(layer, points):
-    if not points:
-        return 0
-    own_edit = not layer.isEditable()
-    if own_edit and not layer.startEditing():
-        raise RuntimeError(f"无法编辑图层：{layer.name()}")
-    added = 0
-    try:
-        for point in points:
-            f = QgsFeature(layer.fields())
-            f.setGeometry(QgsGeometry.fromPointXY(point))
-            if not layer.addFeature(f):
-                raise RuntimeError(f"无法向图层写入要素：{layer.name()}")
-            added += 1
-        if own_edit and not layer.commitChanges():
-            layer.rollBack()
-            raise RuntimeError(f"提交图层失败：{layer.name()}")
-        return added
-    except Exception:
-        if own_edit:
-            layer.rollBack()
-        raise
+    if iface:
+        iface.messageBar().pushSuccess(
+            "ODN Tools Pro",
+            "FEEDER归杆完成：原线 %s 条，临时线 %s 条，归杆顶点 %s 个。"
+            % (info["total"], info["feature_count"], info["snapped_vertices"]),
+            duration=8,
+        )
+    return output
 
 
 def run_feeder_devices(
-    pole_layer_ids, feeder_layer, typej_layer, upb_layer,
-    corner_angle=135.0, pass_tolerance=5.0, iface=None
+    pole_layer_ids,
+    feeder_layer,
+    typej_layer,
+    upb_layer,
+    pass_tolerance=5.0,
+    corner_angle=135.0,
+    iface=None,
 ):
-    project = QgsProject.instance()
-
-    # Pole coordinates are transformed into the temporary FEEDER CRS.
-    pole_records = []
-    for lid in pole_layer_ids:
-        layer = project.mapLayer(lid)
-        if layer is None:
-            continue
-        tr = _same_crs_transform(layer.crs(), feeder_layer.crs())
-        for f in layer.getFeatures():
-            p = _point_from_feature(f)
-            if p is None:
-                continue
-            if tr is not None:
-                p = QgsPointXY(tr.transform(p))
-            pole_records.append({
-                "key": (lid, int(f.id())),
-                "point": p,
-            })
-    if not pole_records:
-        raise RuntimeError("没有可用的杆子点。")
-
-    # For each feeder, find poles close to its geometry and sort by distance
-    # along the feeder. A pole occurring twice is counted once.
-    line_hits = []
-    pole_to_hits = defaultdict(list)
-    pole_feeder_ids = defaultdict(set)
-
-    for ff in feeder_layer.getFeatures():
-        geom = ff.geometry()
-        if geom is None or geom.isEmpty():
-            continue
-        parts = _line_parts(geom)
-        for part_index, pts in enumerate(parts):
-            line = QgsGeometry.fromPolylineXY(pts)
-            if line.isEmpty() or line.length() <= 0:
-                continue
-            local = []
-            for rec in pole_records:
-                loc = _project_position_on_line(line, rec["point"])
-                if loc is None:
-                    continue
-                q = _point_at(line, loc)
-                if q is None or q.distance(rec["point"]) > pass_tolerance:
-                    continue
-                local.append((loc, rec, q))
-            local.sort(key=lambda x: x[0])
-
-            unique = []
-            seen_keys = set()
-            for loc, rec, q in local:
-                if rec["key"] in seen_keys:
-                    continue
-                seen_keys.add(rec["key"])
-                unique.append((loc, rec, q))
-
-            if unique:
-                line_hits.append((int(ff.id()), part_index, line, unique))
-                for item in unique:
-                    pole_to_hits[item[1]["key"]].append((line, item[0], item[1]))
-                    # Count FEEDER features, not vertices/parts.
-                    pole_feeder_ids[item[1]["key"]].add(int(ff.id()))
-
-    # Determine each pole's corner status from each feeder passage. If any
-    # passage is a corner, it is treated as a corner for device placement.
-    pole_info = {}
-    for key, hits in pole_to_hits.items():
-        corner = False
-        min_angle = 180.0
-        for line, loc, rec in hits:
-            angle = _angle_at_line_position(line, loc)
-            min_angle = min(min_angle, angle)
-            if angle <= corner_angle:
-                corner = True
-        pole_info[key] = {
-            "point": hits[0][2]["point"],
-            "corner": corner,
-            "angle": min_angle,
-            "hits": hits,
-        }
-
-    # Process FEEDERs in source order.  Each FEEDER is split at corner
-    # poles.  Every segment starts a fresh TYPE J sequence:
-    #
-    #   straight segment: J, UPB, J, UPB, ...
-    #   corner pole: UPB, then reset the sequence after the corner
-    #
-    # A global processed-pole set is used across FEEDERs.  Therefore, if a
-    # second FEEDER follows poles already handled by the first FEEDER, those
-    # poles are skipped and calculation resumes from the first unprocessed
-    # pole.  This is the required "write by line" behavior.
-    typej_keys = set()
-    upb_keys = set()
-    processed_keys = set()
-
-    for _, _, line, hits in line_hits:
-        # A hit may be encountered more than once when multipart geometry or
-        # multiple selected pole layers contain the same physical pole.
-        ordered = []
-        seen = set()
-        for loc, rec, _ in hits:
-            key = rec["key"]
-            if key in seen:
-                continue
-            seen.add(key)
-            ordered.append((loc, rec))
-
-        # Split into fresh sequences at every corner.  A corner itself is
-        # always UPB and is also a reset point.
-        segment = []
-        for loc, rec in ordered:
-            key = rec["key"]
-
-            if key in processed_keys:
-                # Already written by an earlier FEEDER: do not create another
-                # TYPE J/UPB and do not let the overlap affect this FEEDER's
-                # new-device alternation.
-                continue
-
-            info = pole_info[key]
-            if info["corner"]:
-                # Finish the straight segment before this corner.
-                for idx, (_, srec) in enumerate(segment):
-                    skey = srec["key"]
-                    if skey in processed_keys:
-                        continue
-                    if idx % 2 == 0:
-                        typej_keys.add(skey)
-                    else:
-                        upb_keys.add(skey)
-                    processed_keys.add(skey)
-                segment = []
-
-                # Corner itself is UPB and resets the sequence.
-                upb_keys.add(key)
-                processed_keys.add(key)
-            else:
-                segment.append((loc, rec))
-
-        # Flush the final straight segment.
-        for idx, (_, rec) in enumerate(segment):
-            key = rec["key"]
-            if key in processed_keys:
-                continue
-            if idx % 2 == 0:
-                typej_keys.add(key)
-            else:
-                upb_keys.add(key)
-            processed_keys.add(key)
-
-    # Safety: every passed pole not selected as TYPE J gets UPB.  This also
-    # covers poles whose corner status was discovered from another FEEDER.
-    upb_keys.update(set(pole_info.keys()) - typej_keys - upb_keys)
-
-
+    """Merged FEEDER snap + device placement + Pole.FEEDER update."""
+    if pass_tolerance <= 0:
+        raise RuntimeError("FEEDER归杆距离必须大于0。")
+    if not 0 < corner_angle < 180:
+        raise RuntimeError("FEEDER拐角判定角度必须在0°到180°之间。")
     if typej_layer.id() == upb_layer.id():
         raise RuntimeError("TYPE J图层和UPB图层不能选择同一个图层。")
 
-    typej_points = _filter_new_points(
-        typej_layer, [pole_info[k]["point"] for k in typej_keys]
+    analysis_crs, source_to_analysis, analysis_to_source, scale = _analysis_context(
+        feeder_layer
     )
-    upb_points = _filter_new_points(
-        upb_layer, [pole_info[k]["point"] for k in upb_keys]
-    )
-    added_j = _write_devices(typej_layer, typej_points)
-    added_u = _write_devices(upb_layer, upb_points)
+    pole_records = _build_pole_records(pole_layer_ids, analysis_crs)
+    pole_index = _build_point_index(pole_records)
 
-    # Write the number of distinct FEEDER features passing each selected
-    # pole into an integer field named FEEDER.
-    feeder_counts = {
-        key: len(pole_feeder_ids.get(key, set()))
-        for key in pole_info
+    tolerance_units = (
+        pass_tolerance if source_to_analysis is not None else pass_tolerance * scale
+    )
+
+    temp_layer, snap_info = _snap_feeder(
+        feeder_layer,
+        pole_records,
+        pole_index,
+        source_to_analysis,
+        analysis_to_source,
+        tolerance_units,
+    )
+
+    line_hits, pole_info, pole_feeder_ids = _analyse_feeder(
+        temp_layer,
+        pole_records,
+        pole_index,
+        tolerance_units,
+        corner_angle,
+    )
+
+    typej_keys, upb_keys = _build_device_keys(line_hits, pole_info)
+
+    typej_points = [pole_info[key]["point"] for key in typej_keys]
+    upb_points = [pole_info[key]["point"] for key in upb_keys]
+
+    # Intentionally do NOT inspect/filter existing TYPE J/UPB features.
+    added_typej = _write_points_without_existing_check(
+        typej_layer, analysis_crs, typej_points
+    )
+    added_upb = _write_points_without_existing_check(
+        upb_layer, analysis_crs, upb_points
+    )
+
+    feeder_field_updates = _write_feeder_field(
+        pole_layer_ids, pole_info, pole_feeder_ids
+    )
+
+    result = {
+        "temp_layer_id": temp_layer.id(),
+        "temp_layer_name": temp_layer.name(),
+        "passed_poles": len(pole_info),
+        "corner_poles": sum(
+            1 for info in pole_info.values() if info["corner"]
+        ),
+        "typej_added": added_typej,
+        "upb_added": added_upb,
+        "feeder_field_updates": feeder_field_updates,
+        "snap_info": snap_info,
     }
-    feeder_field_errors = []
-    feeder_values_written = 0
 
-    for lid in pole_layer_ids:
-        layer = project.mapLayer(lid)
-        if layer is None:
-            continue
-        field_idx = layer.fields().indexOf("FEEDER")
-        own_edit = not layer.isEditable()
-        try:
-            if field_idx < 0:
-                if own_edit and not layer.startEditing():
-                    raise RuntimeError(f"无法编辑杆路图层：{layer.name()}")
-                if not layer.addAttribute(QgsField("FEEDER", QVariant.Int)):
-                    raise RuntimeError(f"无法新增FEEDER字段：{layer.name()}")
-                layer.updateFields()
-                field_idx = layer.fields().indexOf("FEEDER")
-            if field_idx < 0:
-                raise RuntimeError(f"无法找到杆路图层 {layer.name()} 的FEEDER字段。")
-
-            for pf in layer.getFeatures():
-                key = (lid, int(pf.id()))
-                count = feeder_counts.get(key, 0)
-                if pf[field_idx] != count:
-                    if not layer.changeAttributeValue(pf.id(), field_idx, count):
-                        raise RuntimeError(f"无法写入{layer.name()}的FEEDER字段，FID={pf.id()}")
-                    feeder_values_written += 1
-
-            if own_edit and not layer.commitChanges():
-                raise RuntimeError(f"提交杆路图层失败：{layer.name()}")
-        except Exception as exc:
-            if own_edit:
-                layer.rollBack()
-            feeder_field_errors.append(str(exc))
-
-    if feeder_field_errors:
-        raise RuntimeError("FEEDER字段写入失败：\n" + "\n".join(feeder_field_errors))
-
-    corners = sum(1 for x in pole_info.values() if x["corner"])
-    msg = (
-        f"FEEDER杆上设备完成：经过杆 {len(pole_info)} 根；"
-        f"拐角杆 {corners} 根；新增 TYPE J {added_j} 个；新增 UPB {added_u} 个；"
-        f"FEEDER字段更新 {feeder_values_written} 根杆。"
-    )
     if iface:
-        iface.messageBar().pushSuccess("ODN Tools Pro", msg, duration=7)
-    return {"poles": len(pole_info), "corners": corners,
-            "typej_added": added_j, "upb_added": added_u}
+        iface.messageBar().pushSuccess(
+            "ODN Tools Pro",
+            (
+                "FEEDER处理完成：临时FEEDER %s 条；经过杆 %s 根；"
+                "拐角杆 %s 根；新增TYPE J %s 个；新增UPB %s 个；"
+                "FEEDER字段更新 %s 根杆。"
+            )
+            % (
+                snap_info["feature_count"],
+                result["passed_poles"],
+                result["corner_poles"],
+                added_typej,
+                added_upb,
+                feeder_field_updates,
+            ),
+            duration=8,
+        )
+
+    return result
 
 
 class FeederPoleDeviceTools:
@@ -770,9 +905,15 @@ class FeederPoleDeviceTools:
         self.iface = iface
 
     def feeder_snap(self):
-        dlg = FeederSnapDialog(self.iface, self.iface.mainWindow())
-        dlg.exec_()
+        return self.feeder_devices()
 
     def feeder_devices(self):
-        dlg = FeederDeviceDialog(self.iface, self.iface.mainWindow())
-        dlg.exec_()
+        dialog = FeederDeviceDialog(
+            self.iface,
+            self.iface.mainWindow(),
+        )
+        return dialog.exec_()
+
+
+# Backward-compatible name for code that imported the old dialog.
+FeederSnapDialog = FeederDeviceDialog
