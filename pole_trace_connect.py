@@ -145,11 +145,16 @@ class PoleTraceMapTool(QgsMapTool):
     def _build_index(self):
         self._index = QgsSpatialIndex(); self._feature_map.clear(); self._point_by_id.clear(); self._labels.clear(); self._next_index_id = 1
         dst = self.canvas.mapSettings().destinationCrs(); project = QgsProject.instance()
-        for layer_id in self.point_layer_ids:
+        for layer_index, layer_id in enumerate(self.point_layer_ids, start=1):
+            try: QtWidgets.QApplication.processEvents()
+            except Exception: pass
             layer = project.mapLayer(layer_id)
             if layer is None: continue
             transform = QgsCoordinateTransform(layer.crs(), dst, project) if layer.crs() != dst else None
-            for feat in layer.getFeatures():
+            for feat_index, feat in enumerate(layer.getFeatures(), start=1):
+                if feat_index % 500 == 0:
+                    try: QtWidgets.QApplication.processEvents()
+                    except Exception: pass
                 geom = feat.geometry()
                 if geom.isEmpty(): continue
                 try:
@@ -187,7 +192,10 @@ class PoleTraceMapTool(QgsMapTool):
         if layer is None: return edges
         project = QgsProject.instance(); dst = self.canvas.mapSettings().destinationCrs()
         transform = QgsCoordinateTransform(layer.crs(), dst, project) if layer.crs() != dst else None
-        for feat in layer.getFeatures():
+        for feat_index, feat in enumerate(layer.getFeatures(), start=1):
+            if feat_index % 500 == 0:
+                try: QtWidgets.QApplication.processEvents()
+                except Exception: pass
             geom = feat.geometry()
             if geom.isEmpty(): continue
             try:
@@ -332,7 +340,10 @@ class PoleTraceMapTool(QgsMapTool):
                 started=True
             transform=QgsCoordinateTransform(self.canvas.mapSettings().destinationCrs(),layer.crs(),QgsProject.instance()) if self.canvas.mapSettings().destinationCrs()!=layer.crs() else None
             added=0
-            for a,b in self.pending_edges:
+            for edge_index, (a,b) in enumerate(self.pending_edges, start=1):
+                if edge_index % 250 == 0:
+                    try: QtWidgets.QApplication.processEvents()
+                    except Exception: pass
                 pa,pb=self._point_by_id.get(a),self._point_by_id.get(b)
                 if pa is None or pb is None: continue
                 if transform: pa,pb=QgsPointXY(transform.transform(pa)),QgsPointXY(transform.transform(pb))
