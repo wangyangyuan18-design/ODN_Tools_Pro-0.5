@@ -2024,7 +2024,12 @@ def _find_duplicate_features(layer):
     except Exception:
         features = list(layer.getFeatures())
 
-    for feature in features:
+    for feature_index, feature in enumerate(features, start=1):
+        if feature_index % 250 == 0:
+            try:
+                QtWidgets.QApplication.processEvents()
+            except Exception:
+                pass
         geometry = feature.geometry()
         if geometry is None or geometry.isEmpty():
             continue
@@ -2137,7 +2142,12 @@ def validation_layer_uniqueness_run(iface=None):
     duplicate_layers = 0
     total_deleted = 0
 
-    for layer in project.mapLayers().values():
+    for layer_index, layer in enumerate(project.mapLayers().values(), start=1):
+        if layer_index % 2 == 0:
+            try:
+                QtWidgets.QApplication.processEvents()
+            except Exception:
+                pass
         try:
             if layer.type() != QgsMapLayer.VectorLayer:
                 continue
