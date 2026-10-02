@@ -75,6 +75,14 @@ class OverlengthPoleProcessor:
     SEARCH_METERS = 3.0
     IMPROVEMENT_METERS = 5.0
 
+    @staticmethod
+    def _pump_ui(counter, every=100):
+        if counter and counter % every == 0:
+            try:
+                QtWidgets.QApplication.processEvents()
+            except Exception:
+                pass
+
     def __init__(self, iface, point_layer_ids, line_layer_id, max_distance):
         self.iface = iface; self.project = QgsProject.instance()
         self.point_layer_ids = point_layer_ids; self.line_layer_id = line_layer_id
@@ -96,7 +104,8 @@ class OverlengthPoleProcessor:
             lyr = self.project.mapLayer(lid)
             if lyr is None: continue
             tr = QgsCoordinateTransform(lyr.crs(), dst, self.project) if lyr.crs() != dst else None
-            for feat in lyr.getFeatures():
+            for feat_index, feat in enumerate(lyr.getFeatures(), start=1):
+                self._pump_ui(feat_index, 250)
                 g = feat.geometry()
                 if g.isEmpty(): continue
                 try:
@@ -140,14 +149,15 @@ class OverlengthPoleProcessor:
             total += self.da.measureLine(QgsPointXY(a), QgsPointXY(b)); cum.append(total)
         return cum, total
 
-    def _project_location(self, pts, p):
+    def _project_location(self, pts, p, cum=None, total=None):
         geom = QgsGeometry.fromPolylineXY([QgsPointXY(x) for x in pts])
         try:
             res = geom.closestSegmentWithContext(QgsPointXY(p)); proj = QgsPointXY(res[1]); after = int(res[2])
         except Exception: return None
         if len(pts) < 2: return None
         seg = max(0, min(len(pts)-2, after-1))
-        cum, total = self._cum_lengths(pts)
+        if cum is None or total is None:
+            cum, total = self._cum_lengths(pts)
         a,b = QgsPointXY(pts[seg]), QgsPointXY(pts[seg+1])
         self.da.setSourceCrs(self.line_layer.crs(), self.project.transformContext())
         seglen = self.da.measureLine(a,b)
@@ -155,8 +165,9 @@ class OverlengthPoleProcessor:
         if seglen > 1e-12: frac = max(0.0, min(1.0, self.da.measureLine(a, proj)/seglen))
         return cum[seg] + seglen*frac, proj, seg, total
 
-    def _point_at_distance(self, pts, distance):
-        cum,total=self._cum_lengths(pts)
+    def _point_at_distance(self, pts, distance, cum=None, total=None):
+        if cum is None or total is None:
+            cum,total=self._cum_lengths(pts)
         if distance <= 0: return QgsPointXY(pts[0]), 0
         if distance >= total: return QgsPointXY(pts[-1]), len(pts)-2
         for i in range(len(pts)-1):
@@ -170,10 +181,12 @@ class OverlengthPoleProcessor:
     def _midpoint(cuts):
         return (min(cuts)+max(cuts))/2.0 if cuts else 0.0
 
-    def _choose_existing(self, pts, candidates):
-        locs=[]; _,total=self._cum_lengths(pts)
+    def _choose_existing(self, pts, candidates, cum=None, total=None):
+        if cum is None or total is None:
+            cum,total=self._cum_lengths(pts)
+        locs=[]
         for _,data,p in candidates:
-            loc=self._project_location(pts,p)
+            loc=self._project_location(pts,p,cum,total)
             if not loc: continue
             d,proj,seg,_=loc
             if d <= 0.001 or total-d <= 0.001: continue
@@ -251,33 +264,36 @@ class OverlengthPoleProcessor:
         if layer is None: self._msg("找不到连线图层。",2); return
         self._prepare_poles()
         feats=list(layer.getFeatures()); unique,dup_ids=self._remove_duplicates(feats)
+        self._pump_ui(1, 1)
         if dup_ids:
             layer.startEditing()
             for fid in dup_ids: layer.deleteFeature(fid)
             layer.commitChanges(); self._stats["duplicates"]=len(dup_ids)
         replacements=[]; temp=self._ensure_temp_layer()
-        for feat in unique:
+        for feat_index, feat in enumerate(unique, start=1):
+            self._pump_ui(feat_index, 50)
             g=feat.geometry()
             if g.isEmpty(): continue
             parts=self._parts(g); changed=False; new_geoms=[]
             for pts in parts:
                 if len(pts)<2: continue
-                _,total=self._cum_lengths(pts)
+                cum,total=self._cum_lengths(pts)
                 if total <= self.max_distance + 1e-8:
                     new_geoms.append(QgsGeometry.fromPolylineXY([QgsPointXY(p) for p in pts])); continue
                 self._stats["over"]+=1; changed=True
                 candidates=self._query_poles(QgsGeometry.fromPolylineXY([QgsPointXY(p) for p in pts]))
-                existing=self._choose_existing(pts,candidates)
+                existing=self._choose_existing(pts,candidates,cum,total)
                 cut_specs=[(d,QgsPointXY(p)) for d,p,_ in existing]
                 cuts=[0.0]+[x[0] for x in cut_specs]+[total]
                 new_dists=self._make_new_cuts(cuts)
                 for d in new_dists:
-                    p,_=self._point_at_distance(pts,d); cut_specs.append((d,p)); self._add_temp_point(temp,p); self._stats["new"]+=1
+                    p,_=self._point_at_distance(pts,d,cum,total); cut_specs.append((d,p)); self._add_temp_point(temp,p); self._stats["new"]+=1
                 allcuts=sorted(cut_specs,key=lambda x:x[0]); segs=self._subline(pts,allcuts); new_geoms.extend(segs); self._stats["segments"]+=len(segs)
             if changed: replacements.append((feat.id(),feat,new_geoms))
         if replacements:
             layer.startEditing()
-            for fid,feat,geoms in replacements:
+            for replace_index, (fid,feat,geoms) in enumerate(replacements, start=1):
+                self._pump_ui(replace_index, 50)
                 layer.deleteFeature(fid)
                 for geom in geoms:
                     nf=QgsFeature(layer.fields()); nf.setGeometry(geom); nf.setAttributes(feat.attributes()); layer.addFeature(nf)
