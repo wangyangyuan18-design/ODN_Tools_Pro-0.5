@@ -721,7 +721,8 @@ class FeederDeviceDialog(QtWidgets.QDialog, _PoleSelectorMixin):
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         )
-        buttons.button(QtWidgets.QDialogButtonBox.Ok).setText("运行")
+        self.run_btn = buttons.button(QtWidgets.QDialogButtonBox.Ok)
+        self.run_btn.setText("运行")
         buttons.accepted.connect(self._run)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
@@ -780,7 +781,10 @@ class FeederDeviceDialog(QtWidgets.QDialog, _PoleSelectorMixin):
             )
             return
 
+        self.run_btn = self.run_btn if hasattr(self, "run_btn") else None
         try:
+            if self.run_btn is not None:
+                self.run_btn.setEnabled(False)
             result = run_feeder_devices(
                 pole_ids,
                 feeder,
@@ -796,6 +800,8 @@ class FeederDeviceDialog(QtWidgets.QDialog, _PoleSelectorMixin):
             QtWidgets.QMessageBox.critical(
                 self, "FEEDER处理失败", str(exc)
             )
+            if self.run_btn is not None:
+                self.run_btn.setEnabled(True)
 
 
 def run_feeder_snap(pole_layer_ids, feeder_layer, tolerance, iface=None):
