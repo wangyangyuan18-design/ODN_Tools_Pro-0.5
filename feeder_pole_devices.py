@@ -42,6 +42,14 @@ def _pump_ui(counter, every=200):
         except Exception:
             pass
 
+def _notify_progress(progress_cb, percent, status=None):
+    if progress_cb is None:
+        return
+    try:
+        progress_cb(max(0.0, min(100.0, float(percent))), status)
+    except Exception:
+        pass
+
 
 def _point_from_feature(feat):
     geom = feat.geometry()
