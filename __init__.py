@@ -26,6 +26,15 @@ def classFactory(iface):
             super().initGui()
             main_window = self.iface.mainWindow()
             icon_path = os.path.join(self.plugin_dir, 'poleTraceConnect.svg')
+            auto_pole_edge_icon = os.path.join(
+                self.plugin_dir, 'auto_pole_edge.svg'
+            )
+            feeder_devices_icon = os.path.join(
+                self.plugin_dir, 'feeder_pole_devices.svg'
+            )
+            distribution_cable_icon = os.path.join(
+                self.plugin_dir, 'distribution_cable_stats.svg'
+            )
 
             self.add_action(
                 icon_path,
@@ -34,7 +43,7 @@ def classFactory(iface):
                 parent=main_window,
             )
             self.add_action(
-                icon_path,
+                auto_pole_edge_icon,
                 self.tr('光缆全自动连线（生成 POLE EDGE）'),
                 self.auto_pole_edge,
                 parent=main_window,
@@ -46,13 +55,13 @@ def classFactory(iface):
                 parent=main_window,
             )
             self.add_action(
-                icon_path,
+                feeder_devices_icon,
                 self.tr('FEEDER归杆及杆上设备布置'),
                 self.feeder_devices,
                 parent=main_window,
             )
             self.add_action(
-                icon_path,
+                distribution_cable_icon,
                 self.tr('Distribution Cable归杆与统计'),
                 self.distribution_cable_stats,
                 parent=main_window,
