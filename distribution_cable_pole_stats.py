@@ -143,14 +143,7 @@ def _collect_poles(pole_layer_ids, analysis_crs, progress_cb=None):
     records = []
 
     total_features = 0
-    total_layers = max(1, len(pole_layer_ids))
-    for layer_number, layer_id in enumerate(pole_layer_ids, start=1):
-        _notify_progress(
-            progress_cb,
-            90.0 + 10.0 * (layer_number - 1) / total_layers,
-            "正在更新杆路 DC No / DC TURN：第 %d / %d 个图层"
-            % (layer_number, total_layers),
-        )
+    for layer_id in pole_layer_ids:
         layer = project.mapLayer(layer_id)
         if layer is None:
             continue
@@ -574,8 +567,15 @@ def _ensure_and_write_fields(
     total_turn = 0
     total_no = 0
     passing_poles = 0
+    total_layers = max(1, len(pole_layer_ids))
 
-    for layer_id in pole_layer_ids:
+    for layer_number, layer_id in enumerate(pole_layer_ids, start=1):
+        _notify_progress(
+            progress_cb,
+            90.0 + 10.0 * (layer_number - 1) / total_layers,
+            "正在更新杆路 DC No / DC TURN：第 %d / %d 个图层"
+            % (layer_number, total_layers),
+        )
         layer = project.mapLayer(layer_id)
         if layer is None:
             continue
