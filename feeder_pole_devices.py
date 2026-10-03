@@ -934,7 +934,9 @@ def run_feeder_snap(pole_layer_ids, feeder_layer, tolerance, iface=None):
     analysis_crs, source_to_analysis, analysis_to_source, scale = _analysis_context(
         feeder_layer
     )
-    pole_records = _build_pole_records(pole_layer_ids, analysis_crs)
+    pole_records = _build_pole_records(
+        pole_layer_ids, analysis_crs, progress_cb=progress_cb
+    )
     pole_index = _build_point_index(pole_records)
 
     tolerance_units = (
@@ -966,8 +968,10 @@ def run_feeder_devices(
     pass_tolerance=5.0,
     corner_angle=135.0,
     iface=None,
+    progress_cb=None,
 ):
     """Merged FEEDER snap + device placement + Pole.FEEDER update."""
+    _notify_progress(progress_cb, 0, "准备 FEEDER 处理……")
     if pass_tolerance <= 0:
         raise RuntimeError("FEEDER归杆距离必须大于0。")
     if not 0 < corner_angle < 180:
@@ -992,6 +996,7 @@ def run_feeder_devices(
         source_to_analysis,
         analysis_to_source,
         tolerance_units,
+        progress_cb=progress_cb,
     )
 
     line_hits, pole_info, pole_feeder_ids = _analyse_feeder(
@@ -1001,8 +1006,10 @@ def run_feeder_devices(
         source_to_analysis,
         tolerance_units,
         corner_angle,
+        progress_cb=progress_cb,
     )
 
+    _notify_progress(progress_cb, 75, "正在计算 TYPE J / UPB 布置……")
     typej_keys, upb_keys = _build_device_keys(
         line_hits, pole_info, corner_angle
     )
@@ -1012,14 +1019,17 @@ def run_feeder_devices(
 
     # Intentionally do NOT inspect/filter existing TYPE J/UPB features.
     added_typej = _write_points_without_existing_check(
-        typej_layer, analysis_crs, typej_points
+        typej_layer, analysis_crs, typej_points,
+        progress_cb=progress_cb,
     )
     added_upb = _write_points_without_existing_check(
-        upb_layer, analysis_crs, upb_points
+        upb_layer, analysis_crs, upb_points,
+        progress_cb=progress_cb,
     )
 
     feeder_field_updates = _write_feeder_field(
-        pole_layer_ids, pole_info, pole_feeder_ids
+        pole_layer_ids, pole_info, pole_feeder_ids,
+        progress_cb=progress_cb,
     )
 
     result = {
@@ -1051,9 +1061,9 @@ def run_feeder_devices(
                 added_upb,
                 feeder_field_updates,
             ),
-            duration=8,
         )
 
+    _notify_progress(progress_cb, 100, "FEEDER处理完成。")
     return result
 
 
