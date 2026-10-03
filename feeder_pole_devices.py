@@ -954,7 +954,9 @@ class FeederDeviceDialog(QtWidgets.QDialog, _PoleSelectorMixin):
             self.cancel_btn.setEnabled(True)
 
 
-def run_feeder_snap(pole_layer_ids, feeder_layer, tolerance, iface=None):
+def run_feeder_snap(
+    pole_layer_ids, feeder_layer, tolerance, iface=None, progress_cb=None
+):
     """Compatibility wrapper: only create the snapped temporary layer."""
     analysis_crs, source_to_analysis, analysis_to_source, scale = _analysis_context(
         feeder_layer
@@ -974,6 +976,7 @@ def run_feeder_snap(pole_layer_ids, feeder_layer, tolerance, iface=None):
         source_to_analysis,
         analysis_to_source,
         tolerance_units,
+        progress_cb=progress_cb,
     )
 
     if iface:
@@ -1007,7 +1010,9 @@ def run_feeder_devices(
     analysis_crs, source_to_analysis, analysis_to_source, scale = _analysis_context(
         feeder_layer
     )
-    pole_records = _build_pole_records(pole_layer_ids, analysis_crs)
+    pole_records = _build_pole_records(
+        pole_layer_ids, analysis_crs, progress_cb=progress_cb
+    )
     pole_index = _build_point_index(pole_records)
 
     tolerance_units = (
