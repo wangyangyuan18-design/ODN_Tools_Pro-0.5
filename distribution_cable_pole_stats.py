@@ -474,19 +474,39 @@ def _analyse_dc(
     source_to_analysis,
     pass_tolerance_units,
     turn_angle,
+    progress_cb=None,
 ):
+    """Analyse only poles assigned to DC endpoints/vertices.
+
+    Each DC endpoint/vertex was snapped to its single nearest pole in
+    _snap_geometry(). Nearby unassigned poles are not counted and cannot
+    create duplicate DC No / DC TURN values.
+    """
     passing = {}
     turning = {}
 
+    try:
+        total_features = max(1, int(temp_dc.featureCount()))
+    except Exception:
+        total_features = 1
+
+    _notify_progress(progress_cb, 45, "正在分析归杆后的 Distribution Cable 路由……")
+
     for feature_index, feature in enumerate(temp_dc.getFeatures(), start=1):
         _pump_ui(feature_index, 50)
+        if feature_index == 1 or feature_index % 10 == 0:
+            _notify_progress(
+                progress_cb,
+                45.0 + 30.0 * feature_index / total_features,
+                "DC路由分析：%d / %d"
+                % (min(feature_index, total_features), total_features),
+            )
+
         source_geom = feature.geometry()
         if source_geom is None or source_geom.isEmpty():
             continue
 
-        geom = _transform_geometry(
-            source_geom, source_to_analysis
-        )
+        geom = _transform_geometry(source_geom, source_to_analysis)
         dc_fid = int(feature.id())
 
         for points in _line_parts(geom):
@@ -494,22 +514,27 @@ def _analyse_dc(
             if line.isEmpty() or line.length() <= 0:
                 continue
 
-            rect = QgsRectangle(line.boundingBox())
-            rect.setXMinimum(rect.xMinimum() - pass_tolerance_units)
-            rect.setXMaximum(rect.xMaximum() + pass_tolerance_units)
-            rect.setYMinimum(rect.yMinimum() - pass_tolerance_units)
-            rect.setYMaximum(rect.yMaximum() + pass_tolerance_units)
+            # The temporary DC vertices are already snapped. Recover the
+            # single assigned pole at each vertex with a tiny metric tolerance.
+            vertex_match_tolerance = max(
+                0.01, min(0.10, abs(float(pass_tolerance_units)) * 1e-3)
+            )
+            local_seen = set()
 
-            for idx in pole_index.intersects(rect):
-                if idx < 0 or idx >= len(pole_records):
-                    continue
-
-                record = pole_records[idx]
-                distance = line.distance(
-                    QgsGeometry.fromPointXY(record["point"])
+            for point in points:
+                record, _ = _nearest_pole(
+                    QgsPointXY(point),
+                    pole_records,
+                    pole_index,
+                    vertex_match_tolerance,
                 )
-                if distance > pass_tolerance_units:
+                if record is None:
                     continue
+
+                key = record["key"]
+                if key in local_seen:
+                    continue
+                local_seen.add(key)
 
                 location = _safe_line_locate(
                     line, record["point"]
@@ -517,15 +542,20 @@ def _analyse_dc(
                 if location is None:
                     continue
 
-                key = record["key"]
                 passing.setdefault(key, set()).add(dc_fid)
 
-                angle = _angle_at_line_position(line, location)
+                angle = _angle_at_line_position(
+                    line, location
+                )
                 if angle <= turn_angle:
                     turning.setdefault(key, set()).add(dc_fid)
 
+    _notify_progress(
+        progress_cb,
+        75,
+        "DC路由分析完成：涉及 %d 根杆。" % len(passing),
+    )
     return passing, turning
-
 
 def _ensure_and_write_fields(
     pole_layer_ids,
