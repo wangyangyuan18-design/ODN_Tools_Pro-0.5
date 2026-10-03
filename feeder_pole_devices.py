@@ -689,8 +689,31 @@ def _write_feeder_field(
                     "杆路图层 %s 中无法找到FEEDER字段。" % layer.name()
                 )
 
+            try:
+                layer_total_features = max(1, int(layer.featureCount()))
+            except Exception:
+                layer_total_features = 1
+
             for feature_index, feature in enumerate(layer.getFeatures(), start=1):
                 _pump_ui(feature_index, 250)
+                if feature_index == 1 or feature_index % 50 == 0:
+                    _notify_progress(
+                        progress_cb,
+                        90.0
+                        + 10.0
+                        * (
+                            (layer_number - 1)
+                            + feature_index / layer_total_features
+                        )
+                        / total_layers,
+                        "正在更新杆路 FEEDER 字段：第 %d / %d 个图层，%d / %d"
+                        % (
+                            layer_number,
+                            total_layers,
+                            min(feature_index, layer_total_features),
+                            layer_total_features,
+                        ),
+                    )
                 key = (layer_id, int(feature.id()))
                 value = len(pole_feeder_ids.get(key, set()))
                 if feature[field_idx] != value:
