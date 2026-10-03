@@ -530,6 +530,16 @@ class AutoPoleEdgeDialog(QtWidgets.QDialog):
         self.cancel_btn.clicked.connect(self._cancel)
         layout.addWidget(buttons)
 
+        self.pole_list.itemChanged.connect(
+            lambda *_: self._refresh_buttons()
+        )
+        self.cable_list.itemChanged.connect(
+            lambda *_: self._refresh_buttons()
+        )
+        self.output_combo.currentIndexChanged.connect(
+            lambda *_: self._refresh_buttons()
+        )
+
         self._load_layers()
 
     def _load_layers(self):
