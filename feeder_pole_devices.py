@@ -2,8 +2,9 @@
 """FEEDER pole snapping and TYPE J / UPB placement tools.
 
 The source FEEDER layer is never edited. One Run performs both:
-1) create a snapped temporary FEEDER layer;
-2) analyse its pole sequence;
+1) create a snapped temporary FEEDER layer, assigning each endpoint/vertex to
+   exactly one nearest pole within the tolerance;
+2) analyse the snapped pole sequence only;
 3) write TYPE J / UPB points;
 4) update Pole.FEEDER.
 
