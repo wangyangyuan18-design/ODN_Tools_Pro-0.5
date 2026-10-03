@@ -858,7 +858,9 @@ def run_distribution_cable_stats(
     snap_tolerance=5.0,
     turn_angle=135.0,
     iface=None,
+    progress_cb=None,
 ):
+    _notify_progress(progress_cb, 0, "准备 Distribution Cable 处理……")
     if snap_tolerance <= 0:
         raise RuntimeError("DC归杆距离必须大于0。")
     if not 0 < turn_angle < 180:
@@ -870,7 +872,7 @@ def run_distribution_cable_stats(
         _analysis_context(dc_layer)
     )
     pole_records = _collect_poles(
-        pole_layer_ids, analysis_crs
+        pole_layer_ids, analysis_crs, progress_cb=progress_cb
     )
     pole_index = _build_point_index(pole_records)
 
@@ -887,6 +889,7 @@ def run_distribution_cable_stats(
         source_to_analysis,
         analysis_to_source,
         tolerance_units,
+        progress_cb=progress_cb,
     )
 
     passing, turning = _analyse_dc(
@@ -902,6 +905,7 @@ def run_distribution_cable_stats(
         pole_layer_ids,
         passing,
         turning,
+        progress_cb=progress_cb,
     )
 
     if iface:
@@ -917,9 +921,9 @@ def run_distribution_cable_stats(
                 summary["dc_turn"],
                 summary["dc_no_sum"],
             ),
-            duration=8,
         )
 
+    _notify_progress(progress_cb, 100, "Distribution Cable处理完成。")
     return {
         **summary,
         "temp_layer_id": temp_dc.id(),
