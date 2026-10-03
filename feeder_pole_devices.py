@@ -315,6 +315,7 @@ def _snap_feeder(
     source_to_analysis,
     analysis_to_source,
     tolerance_units,
+    progress_cb=None,
 ):
     output = _make_temp_layer(source_layer)
     provider = output.dataProvider()
@@ -325,10 +326,28 @@ def _snap_feeder(
     unsnapped_vertices = 0
     collapsed_features = 0
 
-    project = QgsProject.instance()
+    try:
+        total_source_features = max(1, int(source_layer.featureCount()))
+    except Exception:
+        total_source_features = 1
 
-    for source_index, source_feature in enumerate(source_layer.getFeatures(), start=1):
-        _pump_ui(source_index, 100)
+    _notify_progress(progress_cb, 10, "正在进行 FEEDER 归杆……")
+
+    for source_index, source_feature in enumerate(
+        source_layer.getFeatures(), start=1
+    ):
+        _pump_ui(source_index, 50)
+        if source_index == 1 or source_index % 10 == 0:
+            _notify_progress(
+                progress_cb,
+                10.0 + 35.0 * source_index / total_source_features,
+                "FEEDER归杆：%d / %d"
+                % (
+                    min(source_index, total_source_features),
+                    total_source_features,
+                ),
+            )
+
         source_geom = source_feature.geometry()
         if source_geom is None or source_geom.isEmpty():
             continue
@@ -350,10 +369,10 @@ def _snap_feeder(
         start_record = end_record = None
         if new_parts:
             start_record, _ = _nearest_pole(
-                new_parts[0][0], pole_records, pole_index, 1e-9
+                new_parts[0][0], pole_records, pole_index, 1e-6
             )
             end_record, _ = _nearest_pole(
-                new_parts[-1][-1], pole_records, pole_index, 1e-9
+                new_parts[-1][-1], pole_records, pole_index, 1e-6
             )
 
         feature = QgsFeature(output.fields())
@@ -383,6 +402,12 @@ def _snap_feeder(
             collapsed_features += 1
 
     output.updateExtents()
+    _notify_progress(
+        progress_cb,
+        45,
+        "FEEDER归杆完成：%d 个要素，%d 个顶点归杆。"
+        % (total, snapped_vertices),
+    )
     return output, {
         "total": total,
         "feature_count": output.featureCount(),
@@ -391,7 +416,6 @@ def _snap_feeder(
         "unsnapped_vertices": unsnapped_vertices,
         "collapsed_features": collapsed_features,
     }
-
 
 def _safe_line_locate(line, point):
     try:
