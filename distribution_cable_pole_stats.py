@@ -138,9 +138,22 @@ def _analysis_context(source_layer):
     )
 
 
-def _collect_poles(pole_layer_ids, analysis_crs):
+def _collect_poles(pole_layer_ids, analysis_crs, progress_cb=None):
     project = QgsProject.instance()
     records = []
+
+    total_features = 0
+    for layer_id in pole_layer_ids:
+        layer = project.mapLayer(layer_id)
+        if layer is None:
+            continue
+        try:
+            total_features += max(0, int(layer.featureCount()))
+        except Exception:
+            pass
+    total_features = max(1, total_features)
+    scanned = 0
+    _notify_progress(progress_cb, 0, "正在读取杆路图层并建立杆点索引……")
 
     for layer_id in pole_layer_ids:
         layer = project.mapLayer(layer_id)
@@ -154,6 +167,15 @@ def _collect_poles(pole_layer_ids, analysis_crs):
             )
 
         for feature in layer.getFeatures():
+            scanned += 1
+            if scanned == 1 or scanned % 50 == 0:
+                _pump_ui(scanned, 50)
+                _notify_progress(
+                    progress_cb,
+                    10.0 * scanned / total_features,
+                    "正在建立杆点索引：%d / %d"
+                    % (min(scanned, total_features), total_features),
+                )
             point = _point_from_feature(feature)
             if point is None:
                 continue
@@ -171,10 +193,12 @@ def _collect_poles(pole_layer_ids, analysis_crs):
                 "point": point,
             })
 
+    _notify_progress(
+        progress_cb, 10, "杆点索引完成：%d 根杆。" % len(records)
+    )
     if not records:
         raise RuntimeError("选定杆路图层没有可用的杆点。")
     return records
-
 
 def _build_point_index(records):
     index = QgsSpatialIndex()
