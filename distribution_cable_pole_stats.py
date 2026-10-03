@@ -2,8 +2,10 @@
 """Distribution Cable pole snapping and Pole statistics.
 
 The source Distribution Cable layer is never edited. One Run creates a
-temporary snapped copy, analyses pole passage/turns, writes DC No and
-DC TURN to the selected pole layers, then shows the summary report.
+temporary snapped copy, assigns each cable endpoint/vertex to its single
+nearest pole within the tolerance, analyses passage/turns from those
+assigned vertices, writes DC No and DC TURN to the selected pole layers,
+then shows the summary report.
 
 All distance inputs are real metres. Projected CRSs use their unit conversion
 factor; geographic CRSs are analysed in a local UTM CRS.
@@ -925,6 +927,9 @@ def run_distribution_cable_stats(
         progress_cb=progress_cb,
     )
 
+    _notify_progress(
+        progress_cb, 80, "正在准备写入 DC No / DC TURN 字段……"
+    )
     summary = _ensure_and_write_fields(
         pole_layer_ids,
         passing,
