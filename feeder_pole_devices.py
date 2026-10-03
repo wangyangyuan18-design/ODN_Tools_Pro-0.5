@@ -843,6 +843,16 @@ class FeederDeviceDialog(QtWidgets.QDialog, _PoleSelectorMixin):
         note.setStyleSheet("color:#666;")
         layout.addWidget(note)
 
+        self.status_label = QtWidgets.QLabel("就绪")
+        self.status_label.setWordWrap(True)
+        layout.addWidget(self.status_label)
+
+        self.progress = QtWidgets.QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.progress.setFormat("%p%")
+        layout.addWidget(self.progress)
+
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
         )
@@ -880,6 +890,15 @@ class FeederDeviceDialog(QtWidgets.QDialog, _PoleSelectorMixin):
             if self.poles.item(i).checkState() == QtCore.Qt.Checked
         ]
 
+    def _progress_update(self, percent, status=None):
+        self.progress.setValue(int(round(percent)))
+        if status:
+            self.status_label.setText(str(status))
+        try:
+            QtWidgets.QApplication.processEvents()
+        except Exception:
+            pass
+
     def _run(self):
         pole_ids = self._selected_poles()
         feeder = QgsProject.instance().mapLayer(self.feeder.currentData())
@@ -910,6 +929,8 @@ class FeederDeviceDialog(QtWidgets.QDialog, _PoleSelectorMixin):
         try:
             self.run_btn.setEnabled(False)
             self.cancel_btn.setEnabled(False)
+            self.progress.setValue(0)
+            self.status_label.setText("准备开始 FEEDER 处理……")
             result = run_feeder_devices(
                 pole_ids,
                 feeder,
@@ -918,10 +939,14 @@ class FeederDeviceDialog(QtWidgets.QDialog, _PoleSelectorMixin):
                 self.tolerance.value(),
                 self.corner_angle.value(),
                 self.iface,
+                progress_cb=self._progress_update,
             )
             if result:
+                self.progress.setValue(100)
+                self.status_label.setText("FEEDER处理完成。")
                 self.accept()
         except Exception as exc:
+            self.status_label.setText("FEEDER处理失败。")
             QtWidgets.QMessageBox.critical(
                 self, "FEEDER处理失败", str(exc)
             )
