@@ -599,7 +599,12 @@ def _analyse_feeder(
     return line_hits, pole_info, pole_feeder_ids
 
 def _write_points_without_existing_check(
-    layer, points_analysis_crs, points, progress_cb=None
+    layer,
+    points_analysis_crs,
+    points,
+    progress_cb=None,
+    progress_start=75.0,
+    progress_end=90.0,
 ):
     if not points:
         return 0
@@ -621,10 +626,13 @@ def _write_points_without_existing_check(
             _pump_ui(point_index, 50)
             _notify_progress(
                 progress_cb,
-                75.0 + 15.0 * point_index / total_points,
-                "正在写入 TYPE J / UPB：%d / %d"
-                % (point_index, total_points),
+                progress_start
+                + (progress_end - progress_start)
+                * point_index / total_points,
+                "正在写入 %s：%d / %d" % (layer.name(), point_index, total_points),
+
             )
+
             target_point = _transform_point(point, transform)
             feature = QgsFeature(layer.fields())
             feature.setGeometry(QgsGeometry.fromPointXY(target_point))
@@ -1049,12 +1057,20 @@ def run_feeder_devices(
 
     # Intentionally do NOT inspect/filter existing TYPE J/UPB features.
     added_typej = _write_points_without_existing_check(
-        typej_layer, analysis_crs, typej_points,
+        typej_layer,
+        analysis_crs,
+        typej_points,
         progress_cb=progress_cb,
+        progress_start=75.0,
+        progress_end=82.5,
     )
     added_upb = _write_points_without_existing_check(
-        upb_layer, analysis_crs, upb_points,
+        upb_layer,
+        analysis_crs,
+        upb_points,
         progress_cb=progress_cb,
+        progress_start=82.5,
+        progress_end=90.0,
     )
 
     feeder_field_updates = _write_feeder_field(
