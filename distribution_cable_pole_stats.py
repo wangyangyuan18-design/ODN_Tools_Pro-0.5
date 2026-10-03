@@ -899,6 +899,7 @@ def run_distribution_cable_stats(
         source_to_analysis,
         tolerance_units,
         turn_angle,
+        progress_cb=progress_cb,
     )
 
     summary = _ensure_and_write_fields(
