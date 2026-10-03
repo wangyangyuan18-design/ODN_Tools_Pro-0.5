@@ -616,8 +616,31 @@ def _ensure_and_write_fields(
                     % layer.name()
                 )
 
+            try:
+                layer_total_features = max(1, int(layer.featureCount()))
+            except Exception:
+                layer_total_features = 1
+
             for feature_index, feature in enumerate(layer.getFeatures(), start=1):
                 _pump_ui(feature_index, 250)
+                if feature_index == 1 or feature_index % 50 == 0:
+                    _notify_progress(
+                        progress_cb,
+                        90.0
+                        + 10.0
+                        * (
+                            (layer_number - 1)
+                            + feature_index / layer_total_features
+                        )
+                        / total_layers,
+                        "正在更新杆路 DC No / DC TURN：第 %d / %d 个图层，%d / %d"
+                        % (
+                            layer_number,
+                            total_layers,
+                            min(feature_index, layer_total_features),
+                            layer_total_features,
+                        ),
+                    )
                 key = (layer_id, int(feature.id()))
                 dc_no = len(passing.get(key, set()))
                 dc_turn = len(turning.get(key, set()))
