@@ -598,7 +598,9 @@ def _analyse_feeder(
     )
     return line_hits, pole_info, pole_feeder_ids
 
-def _write_points_without_existing_check(layer, points_analysis_crs, points):
+def _write_points_without_existing_check(
+    layer, points_analysis_crs, points, progress_cb=None
+):
     if not points:
         return 0
 
@@ -613,9 +615,16 @@ def _write_points_without_existing_check(layer, points_analysis_crs, points):
         raise RuntimeError("无法编辑图层：%s" % layer.name())
 
     added = 0
+    total_points = max(1, len(points))
     try:
         for point_index, point in enumerate(points, start=1):
             _pump_ui(point_index, 50)
+            _notify_progress(
+                progress_cb,
+                75.0 + 15.0 * point_index / total_points,
+                "正在写入 TYPE J / UPB：%d / %d"
+                % (point_index, total_points),
+            )
             target_point = _transform_point(point, transform)
             feature = QgsFeature(layer.fields())
             feature.setGeometry(QgsGeometry.fromPointXY(target_point))
@@ -633,11 +642,20 @@ def _write_points_without_existing_check(layer, points_analysis_crs, points):
         raise
 
 
-def _write_feeder_field(pole_layer_ids, pole_info, pole_feeder_ids):
+def _write_feeder_field(
+    pole_layer_ids, pole_info, pole_feeder_ids, progress_cb=None
+):
     project = QgsProject.instance()
     field_updates = 0
+    total_layers = max(1, len(pole_layer_ids))
 
-    for layer_id in pole_layer_ids:
+    for layer_number, layer_id in enumerate(pole_layer_ids, start=1):
+        _notify_progress(
+            progress_cb,
+            90.0 + 10.0 * (layer_number - 1) / total_layers,
+            "正在更新杆路 FEEDER 字段：第 %d / %d 个图层"
+            % (layer_number, total_layers),
+        )
         layer = project.mapLayer(layer_id)
         if layer is None:
             continue
@@ -684,6 +702,7 @@ def _write_feeder_field(pole_layer_ids, pole_info, pole_feeder_ids):
                 layer.rollBack()
             raise
 
+    _notify_progress(progress_cb, 100, "FEEDER处理完成。")
     return field_updates
 
 
@@ -935,7 +954,6 @@ def run_feeder_snap(pole_layer_ids, feeder_layer, tolerance, iface=None):
             "ODN Tools Pro",
             "FEEDER归杆完成：原线 %s 条，临时线 %s 条，归杆顶点 %s 个。"
             % (info["total"], info["feature_count"], info["snapped_vertices"]),
-            duration=8,
         )
     return output
 
