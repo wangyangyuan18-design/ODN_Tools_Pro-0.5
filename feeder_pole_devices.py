@@ -473,13 +473,46 @@ def _angle_at_line_position(line, position):
     return math.degrees(math.acos(dot))
 
 
-def _analyse_feeder(feeder_layer, pole_records, pole_index, source_to_analysis, tolerance_units, corner_angle):
+def _analyse_feeder(
+    feeder_layer,
+    pole_records,
+    pole_index,
+    source_to_analysis,
+    tolerance_units,
+    corner_angle,
+    progress_cb=None,
+):
+    """Analyse poles actually assigned to FEEDER vertices.
+
+    One FEEDER endpoint/vertex is assigned to exactly one nearest pole.
+    Nearby but unassigned poles are not treated as FEEDER passage points.
+    """
     line_hits = []
     pole_to_hits = defaultdict(list)
     pole_feeder_ids = defaultdict(set)
 
-    for feeder_index, feeder_feature in enumerate(feeder_layer.getFeatures(), start=1):
+    try:
+        total_features = max(1, int(feeder_layer.featureCount()))
+    except Exception:
+        total_features = 1
+
+    _notify_progress(progress_cb, 45, "正在分析归杆后的 FEEDER 路由……")
+
+    for feeder_index, feeder_feature in enumerate(
+        feeder_layer.getFeatures(), start=1
+    ):
         _pump_ui(feeder_index, 50)
+        if feeder_index == 1 or feeder_index % 10 == 0:
+            _notify_progress(
+                progress_cb,
+                45.0 + 30.0 * feeder_index / total_features,
+                "FEEDER路由分析：%d / %d"
+                % (
+                    min(feeder_index, total_features),
+                    total_features,
+                ),
+            )
+
         geom = feeder_feature.geometry()
         if geom is None or geom.isEmpty():
             continue
@@ -492,35 +525,44 @@ def _analyse_feeder(feeder_layer, pole_records, pole_index, source_to_analysis, 
                 continue
 
             local = []
-            query_rect = line.boundingBox()
-            query_rect.setXMinimum(query_rect.xMinimum() - tolerance_units)
-            query_rect.setXMaximum(query_rect.xMaximum() + tolerance_units)
-            query_rect.setYMinimum(query_rect.yMinimum() - tolerance_units)
-            query_rect.setYMaximum(query_rect.yMaximum() + tolerance_units)
+            # The temporary FEEDER has already been snapped. Match each
+            # snapped vertex to exactly one nearest pole using a tiny
+            # tolerance, rather than accepting every pole near the segment.
+            vertex_match_tolerance = max(
+                0.01, min(0.10, abs(float(tolerance_units)) * 1e-3)
+            )
 
-            candidate_ids = pole_index.intersects(query_rect)
-            for idx in candidate_ids:
-                if idx < 0 or idx >= len(pole_records):
+            for point in points:
+                record, _ = _nearest_pole(
+                    QgsPointXY(point),
+                    pole_records,
+                    pole_index,
+                    vertex_match_tolerance,
+                )
+                if record is None:
                     continue
-                record = pole_records[idx]
-                location = _safe_line_locate(line, record["point"])
+
+                location = _safe_line_locate(
+                    line, record["point"]
+                )
                 if location is None:
                     continue
-                projected = _point_at(line, location)
-                if projected is None:
-                    continue
-                if projected.distance(record["point"]) > tolerance_units:
-                    continue
-                local.append((location, record, projected))
+                local.append((location, record, QgsPointXY(point)))
 
             local.sort(key=lambda item: item[0])
 
+            # A single snapped vertex cannot contribute two poles. Keep a
+            # pole only once at the same route position.
             unique = []
-            seen_keys = set()
+            seen_signatures = set()
             for location, record, projected in local:
-                if record["key"] in seen_keys:
+                signature = (
+                    record["key"],
+                    round(float(location), 6),
+                )
+                if signature in seen_signatures:
                     continue
-                seen_keys.add(record["key"])
+                seen_signatures.add(signature)
                 unique.append((location, record, projected))
 
             if unique:
@@ -549,8 +591,12 @@ def _analyse_feeder(feeder_layer, pole_records, pole_index, source_to_analysis, 
             "hits": hits,
         }
 
+    _notify_progress(
+        progress_cb,
+        75,
+        "FEEDER路由分析完成：涉及 %d 根杆。" % len(pole_info),
+    )
     return line_hits, pole_info, pole_feeder_ids
-
 
 def _write_points_without_existing_check(layer, points_analysis_crs, points):
     if not points:
